@@ -33,7 +33,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
         with:
-          role-to-assume: ${{ secrets.COOKIEMONSTER_AWS_ROLE_ARN }}
+          role-to-assume: ${{ secrets.COOKIECRUMBLER_AWS_ROLE_ARN }}
           role-session-name: github-actions-ecr
           aws-region: us-west-2
 
@@ -53,7 +53,7 @@ jobs:
       - name: Build, tag, and push image to Amazon ECR
         uses: docker/build-push-action@471d1dc4e07e5cdedd4c2171150001c434f0b7a4 # v6.15.0
         with:
-          tags: ${{ steps.login-ecr.outputs.registry }}/${{ vars.COOKIEMONSTER_ECR_REPOSITORY }}:latest
+          tags: ${{ steps.login-ecr.outputs.registry }}/${{ vars.COOKIECRUMBLER_ECR_REPOSITORY }}:latest
           build-args: |
             FULL_CACHEBUST=${{ steps.vars.outputs.FULL_CACHEBUST }}
             SETUP_CACHEBUST=${{ steps.vars.outputs.SETUP_CACHEBUST }}
@@ -64,7 +64,7 @@ jobs:
 
       - name: Trigger ECS deployment
         run: |
-          aws ecs update-service --cluster ${{ vars.COOKIEMONSTER_ECS_CLUSTER_NAME }} --service ${{ vars.COOKIEMONSTER_ECS_SERVICE_NAME }} --force-new-deployment --query service.serviceName --output text
+          aws ecs update-service --cluster ${{ vars.COOKIECRUMBLER_ECS_CLUSTER_NAME }} --service ${{ vars.COOKIECRUMBLER_ECS_SERVICE_NAME }} --force-new-deployment --query service.serviceName --output text
           if [ $(($(date +%s) - ${{ steps.vars.outputs.START_TIMESTAMP }})) -gt 105 ]; then
-            aws ecs wait services-stable --cluster ${{ vars.COOKIEMONSTER_ECS_CLUSTER_NAME }} --services ${{ vars.COOKIEMONSTER_ECS_SERVICE_NAME }}
+            aws ecs wait services-stable --cluster ${{ vars.COOKIECRUMBLER_ECS_CLUSTER_NAME }} --services ${{ vars.COOKIECRUMBLER_ECS_SERVICE_NAME }}
           fi

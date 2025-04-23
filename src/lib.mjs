@@ -85,7 +85,7 @@ export const checkPage = async (args) => {
 
   const templateProfile = templateProfilePathForArgs(args)
   // Only operate on a copy of the template profile
-  const workingProfile = await fs.mkdtemp(path.join(os.tmpdir(), 'cookiemonster-profile-'))
+  const workingProfile = await fs.mkdtemp(path.join(os.tmpdir(), 'cookiecrumbler-profile-'))
 
   try {
     await fs.cp(templateProfile, workingProfile, { recursive: true })
@@ -290,7 +290,7 @@ export const checkPage = async (args) => {
 }
 
 export const prepareProfile = async (args) => {
-  const tmpProfile = await fs.mkdtemp(path.join(os.tmpdir(), 'cookiemonster-setup-profile-'))
+  const tmpProfile = await fs.mkdtemp(path.join(os.tmpdir(), 'cookiecrumbler-setup-profile-'))
   const templateProfile = templateProfilePathForArgs(args)
 
   if (existsSync(templateProfile)) {

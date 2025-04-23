@@ -1,10 +1,10 @@
 {
-  "name": "cookiemonster",
+  "name": "cookiecrumbler",
   "description": "Automatically gobble up cookie consent notices",
   "license": "MPL-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/brave-experiments/cookiemonster"
+    "url": "https://github.com/brave/cookiecrumbler"
   },
   "scripts": {
     "setup": "node src/setup.mjs",

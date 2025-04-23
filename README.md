@@ -1,14 +1,14 @@
-# cookiemonster
+# cookiecrumbler
 
 [![License](https://img.shields.io/badge/License-MPL--2.0-blue)](LICENSE)
 
 I eat cookie consent notices. **Nom nom**.
 
-Cookiemonster automatically detects cookie notices on Web pages. It's intended to help with both detection of cookie notices that we don't currently block, and to identify webcompat reports as being related to cookie consent blocking. 
+Cookiecrumbler automatically detects cookie notices on Web pages. It's intended to help with both detection of cookie notices that we don't currently block, and to identify webcompat reports as being related to cookie consent blocking. 
 
 ## Deployment status
 
-Cookiemonster is currently being developed as a Web app which will help us run crawls and/or integrate with the webcompat reporter backend. It can also be [used as a library](using-as-a-library). In the future, we could even bundle it in the browser.
+Cookiecrumbler is currently being developed as a Web app which will help us run crawls and/or integrate with the webcompat reporter backend. It can also be [used as a library](using-as-a-library). In the future, we could even bundle it in the browser.
 
 ## Setup
 
@@ -60,7 +60,7 @@ docker compose --profile ollama up brave_ollama
 
 3. With LLM support via AWS Bedrock:
 ```bash
-aws-vault exec cookiemonster-bedrock -- docker compose --profile litellm up
+aws-vault exec cookiecrumbler-bedrock -- docker compose --profile litellm up
 ```
 
 > [!NOTE]
@@ -71,7 +71,7 @@ For all setups, visit `localhost:3000` in your browser.
 ## Using as a library
 
 ```js
-import { checkPage } from 'cookiemonster';
+import { checkPage } from 'cookiecrumbler';
 
 const result = await checkPage({
   url: 'https://example.com',        // URL to visit

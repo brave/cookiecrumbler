@@ -2,9 +2,7 @@
 
 [![License](https://img.shields.io/badge/License-MPL--2.0-blue)](LICENSE)
 
-I eat cookie consent notices. **Nom nom**.
-
-Cookiecrumbler automatically detects cookie notices on Web pages. It's intended to help with both detection of cookie notices that we don't currently block, and to identify webcompat reports as being related to cookie consent blocking. 
+Cookiecrumbler automatically detects cookie consent notices on Web pages. It's intended to help with both detection of cookie consent notices that we don't currently block, and to identify webcompat reports as being related to cookie consent notice blocking. 
 
 ## Deployment status
 

@@ -3,7 +3,7 @@ x-brave-base: &brave_base
     context: .
     dockerfile: Dockerfile
   init: true
-  image: ${DOCKER_REPOSITORY:-brave/cookiemonster}:latest
+  image: ${DOCKER_REPOSITORY:-brave/cookiecrumbler}:latest
   volumes:
     - .:/app
   env_file: .env

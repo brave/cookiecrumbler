@@ -45,10 +45,10 @@ async function testPage (t, testCasePath, expectedCookieNotice, expectedScrollBl
   } else {
     const [expectedMarkupHash, expectedRange] = expectedCookieNotice
     await t.test('should detect notice', async (t) => {
-      if (markupHash !== expectedMarkupHash && r.markup) {
+      if (markupHash !== expectedMarkupHash && r.markupInner) {
         t.diagnostic(`Markup for ${testCasePath}:`)
-        t.diagnostic(`raw HTML: ${r.markup}`)
-        t.diagnostic(`base64 HTML: ${Buffer.from(r.markup).toString('base64')}`)
+        t.diagnostic(`raw HTML: ${r.markupInner}`)
+        t.diagnostic(`base64 HTML: ${Buffer.from(r.markupInner).toString('base64')}`)
       }
       t.assert.strictEqual(markupHash, expectedMarkupHash,
         `expected cookie notice hash "${expectedMarkupHash}" did not match result "${markupHash}"`)

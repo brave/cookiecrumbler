@@ -20,7 +20,7 @@
   "main": "src/lib.mjs",
   "dependencies": {
     "@gorhill/publicsuffixlist": "^3.0.1",
-    "@koa/bodyparser": "^5.1.1",
+    "@koa/bodyparser": "^6.0.0",
     "@koa/router": "^13.0.0",
     "@sentry/node": "^9.0.0",
     "async-mutex": "^0.5.0",

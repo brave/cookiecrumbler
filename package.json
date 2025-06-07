@@ -29,7 +29,7 @@
     "koa-compress": "^5.1.1",
     "openai": "^5.0.0",
     "proxy-chain": "^2.5.3",
-    "puppeteer-core": "~24.6.0",
+    "puppeteer-core": "~24.9.0",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
     "rebrowser-patches": "^1.0.15",

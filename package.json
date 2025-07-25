@@ -41,7 +41,7 @@
   },
   "devDependencies": {
     "@reporters/github": "1.7.2",
-    "esbuild": "0.25.5",
+    "esbuild": "0.25.6",
     "standard": "17.1.2"
   }
 }

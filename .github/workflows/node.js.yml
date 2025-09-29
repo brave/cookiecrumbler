@@ -16,6 +16,7 @@ permissions:
 env:
   BEDROCK_MODEL: "meta.llama3-8b-instruct-v1:0"
   #BEDROCK_MODEL: "us.meta.llama3-2-11b-instruct-v1:0"
+  BRAVE_CHANNEL: "nightly" # release, beta, nightly
 
 jobs:
   build:
@@ -70,11 +71,19 @@ jobs:
         #echo "Initiating Ollama model pull..."
         #curl -s -f -L http://localhost:11434/api/pull -H "Content-Type: application/json" \
         #  -d '{"name": "llama3", "stream": false}' &
-        sudo curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg
-        echo "deb [signed-by=/usr/share/keyrings/brave-browser-archive-keyring.gpg] https://brave-browser-apt-release.s3.brave.com/ stable main" | sudo tee /etc/apt/sources.list.d/brave-browser-release.list
+
+        # Configure Brave browser channel (similar to Dockerfile)
+        CHANNEL="${{ env.BRAVE_CHANNEL }}"
+        PACKAGE_NAME="brave-browser-${CHANNEL}"
+        PACKAGE_NAME="${PACKAGE_NAME%-release}" # strip -release from the package name
+
+        sudo curl -fsSLo /usr/share/keyrings/${PACKAGE_NAME}-archive-keyring.gpg https://brave-browser-apt-${CHANNEL}.s3.brave.com/${PACKAGE_NAME}-archive-keyring.gpg
+        echo "deb [signed-by=/usr/share/keyrings/${PACKAGE_NAME}-archive-keyring.gpg] https://brave-browser-apt-${CHANNEL}.s3.brave.com/ stable main" | sudo tee /etc/apt/sources.list.d/brave-browser-${CHANNEL}.list
         sudo apt update
-        sudo apt install brave-browser patch
+        sudo apt install ${PACKAGE_NAME} patch
         npm run rebrowser-patches
+
+        echo "BRAVE_BINARY=/usr/bin/${PACKAGE_NAME}" >> $GITHUB_ENV
 
     - name: Start Bedrock Proxy
       run: |
@@ -113,6 +122,5 @@ jobs:
         OPENAI_API_KEY: bedrock
         OPENAI_BASE_URL: http://localhost:11434/api/v1
         OPENAI_MODEL: ${{ env.BEDROCK_MODEL }}
-        BRAVE_BINARY: /usr/bin/brave-browser
       run: |
         npm run test:ci

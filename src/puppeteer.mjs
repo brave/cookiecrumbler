@@ -1,4 +1,4 @@
-import { templateProfilePathForArgs } from './util.mjs'
+import { templateProfilePathForArgs } from './setupUtil.mjs'
 
 export const puppeteerConfigForArgs = async (args) => {
   const puppeteerArgs = {
@@ -11,6 +11,7 @@ export const puppeteerConfigForArgs = async (args) => {
       '--disable-setuid-sandbox',
       '--disable-gpu',
       '--disable-features=BraveAdblockCookieListDefault,BraveAdblockMobileNotificationsListDefault',
+      '--allow-brave-component-update',
       '--disable-component-update'
     ],
     executablePath: args.executablePath,

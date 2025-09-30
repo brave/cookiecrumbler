@@ -1,10 +1,10 @@
 {
-  "name": "cookiemonster",
+  "name": "cookiecrumbler",
   "description": "Automatically gobble up cookie consent notices",
   "license": "MPL-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/brave-experiments/cookiemonster"
+    "url": "https://github.com/brave/cookiecrumbler"
   },
   "scripts": {
     "setup": "node src/setup.mjs",
@@ -13,31 +13,35 @@
     "test": "node --test test/test.mjs",
     "test:ci": "node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=@reporters/github --test-reporter-destination=stdout test/test.mjs",
     "lint": "standard",
-    "lint-fix": "standard --fix"
+    "lint-fix": "standard --fix",
+    "build": "esbuild --bundle --format=cjs --sourcemap --outdir=bundles src/inpage/index.mjs",
+    "watch": "npm run build -- --watch"
   },
   "main": "src/lib.mjs",
   "dependencies": {
     "@gorhill/publicsuffixlist": "^3.0.1",
-    "@koa/bodyparser": "^5.1.1",
-    "@koa/router": "^13.0.0",
-    "@sentry/node": "^8.26.0",
+    "@koa/bodyparser": "^6.0.0",
+    "@koa/router": "^14.0.0",
+    "@sentry/node": "^10.0.0",
     "async-mutex": "^0.5.0",
-    "koa": "^2.15.3",
+    "error-stack-parser": "^2.1.4",
+    "koa": "^3.0.1",
     "koa-compress": "^5.1.1",
-    "nunjucks": "^3.2.4",
-    "openai": "^4.73.0",
+    "openai": "^5.0.0",
     "proxy-chain": "^2.5.3",
-    "puppeteer-core": "~23.10.0",
+    "puppeteer-core": "~24.22.0",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
     "rebrowser-patches": "^1.0.15",
     "rehype-format": "^5.0.0",
     "rehype-parse": "^9.0.0",
     "rehype-stringify": "^10.0.0",
+    "source-map": "^0.7.4",
     "unified": "^11.0.4"
   },
   "devDependencies": {
-    "@reporters/github": "1.7.1",
+    "@reporters/github": "1.11.0",
+    "esbuild": "0.25.10",
     "standard": "17.1.2"
   }
 }

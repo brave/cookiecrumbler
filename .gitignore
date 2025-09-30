@@ -3,3 +3,4 @@ profile/
 .env
 adblock_lists.json
 public_suffix_list.dat
+bundles/

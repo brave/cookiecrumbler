@@ -12,11 +12,10 @@ import { bodyParser } from '@koa/bodyparser'
 import compress from 'koa-compress'
 import * as Sentry from '@sentry/node'
 import Router from '@koa/router'
-import nunjucks from 'nunjucks'
 import { Semaphore, withTimeout } from 'async-mutex'
 
 import { checkPage } from './lib.mjs'
-import { getFilteredKnownDevices } from './util.mjs'
+import { getFilteredKnownDevices } from './setupUtil.mjs'
 
 // Calculate default max concurrency based on available memory
 const totalMemoryMB = os.totalmem() / (1024 * 1024)
@@ -45,10 +44,6 @@ app.use(compress())
 Sentry.setupKoaErrorHandler(app)
 
 const version = process.env.GIT_COMMIT ? process.env.GIT_COMMIT.slice(0, 6) : 'unknown'
-nunjucks.configure(path.join(import.meta.dirname, 'views'), {
-  autoescape: true,
-  noCache: version === 'unknown' // assume unknown commit is a development environment
-})
 
 const proxyList = process.env.PROXY_LIST ? JSON.parse(process.env.PROXY_LIST) : {}
 const validProxies = Object.keys(proxyList).reduce((acc, region) => {
@@ -62,15 +57,30 @@ const validProxies = Object.keys(proxyList).reduce((acc, region) => {
   return acc
 }, [])
 
+function proxyToLocation (location, proxyList) {
+  for (const region in proxyList) {
+    for (const country in proxyList[region]) {
+      for (const city in proxyList[region][country]) {
+        if (location === proxyList[region][country][city]) {
+          return `${region} / ${country} / ${city}`
+        }
+      }
+    }
+  }
+}
+
 // Create a new router
 const router = new Router()
 
 // Define routes
 router.get('/', async (ctx) => {
-  ctx.body = nunjucks.render('page.html.njk', {
-    version
-  })
+  ctx.body = await fs.readFile(path.join(import.meta.dirname, 'index.html'))
   ctx.response.type = 'html'
+})
+
+router.get('/version', async (ctx) => {
+  ctx.body = version
+  ctx.response.type = 'text'
 })
 
 router.get('/adblock_lists.json', async (ctx) => {
@@ -96,6 +106,7 @@ router.post('/check', async (ctx) => {
     seconds,
     adblockLists,
     screenshot,
+    markup,
     location,
     slowCheck,
     device,
@@ -126,6 +137,7 @@ router.post('/check', async (ctx) => {
         adblockLists,
         // debugLevel: 'verbose',
         screenshot,
+        markup,
         location,
         slowCheck,
         device,
@@ -134,6 +146,8 @@ router.post('/check', async (ctx) => {
       })
     })
 
+    report.version = version
+    report.location = proxyToLocation(location, proxyList)
     ctx.body = JSON.stringify(report)
     ctx.response.type = 'json'
   } catch (error) {

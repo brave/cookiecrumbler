@@ -32,6 +32,7 @@ COPY . /app
 
 ARG SETUP_CACHEBUST=0
 
+RUN npm run build
 RUN npm run setup -- ${BRAVE_BINARY} && chmod -R o+rX /app/profile
 
 EXPOSE 3000

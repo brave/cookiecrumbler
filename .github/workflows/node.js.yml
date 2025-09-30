@@ -77,6 +77,8 @@ jobs:
         PACKAGE_NAME="brave-browser-${CHANNEL}"
         PACKAGE_NAME="${PACKAGE_NAME%-release}" # strip -release from the package name
 
+        sudo rm /var/lib/man-db/auto-update
+
         sudo curl -fsSLo /usr/share/keyrings/${PACKAGE_NAME}-archive-keyring.gpg https://brave-browser-apt-${CHANNEL}.s3.brave.com/${PACKAGE_NAME}-archive-keyring.gpg
         echo "deb [signed-by=/usr/share/keyrings/${PACKAGE_NAME}-archive-keyring.gpg] https://brave-browser-apt-${CHANNEL}.s3.brave.com/ stable main" | sudo tee /etc/apt/sources.list.d/brave-browser-${CHANNEL}.list
         sudo apt update

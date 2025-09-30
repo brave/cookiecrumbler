@@ -20,16 +20,16 @@
   "main": "src/lib.mjs",
   "dependencies": {
     "@gorhill/publicsuffixlist": "^3.0.1",
-    "@koa/bodyparser": "^5.1.1",
-    "@koa/router": "^13.0.0",
-    "@sentry/node": "^9.0.0",
+    "@koa/bodyparser": "^6.0.0",
+    "@koa/router": "^14.0.0",
+    "@sentry/node": "^10.0.0",
     "async-mutex": "^0.5.0",
     "error-stack-parser": "^2.1.4",
-    "koa": "^2.16.1",
+    "koa": "^3.0.1",
     "koa-compress": "^5.1.1",
-    "openai": "^4.73.0",
+    "openai": "^5.0.0",
     "proxy-chain": "^2.5.3",
-    "puppeteer-core": "~24.6.0",
+    "puppeteer-core": "~24.22.0",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
     "rebrowser-patches": "^1.0.15",
@@ -40,8 +40,8 @@
     "unified": "^11.0.4"
   },
   "devDependencies": {
-    "@reporters/github": "1.7.2",
-    "esbuild": "0.25.2",
+    "@reporters/github": "1.11.0",
+    "esbuild": "0.25.10",
     "standard": "17.1.2"
   }
 }

@@ -331,7 +331,7 @@ export const prepareProfile = async (args) => {
   console.log('Waiting for components to update...')
   await setTimeout(500)
   await page.waitForFunction(() => {
-    const elements = document.querySelectorAll('span[jscontent="status"]')
+    const elements = document.querySelectorAll('span[id^="status-"]')
     return Array.from(elements)
       .map(el => el.innerText.trim())
       .filter(text => text !== '')

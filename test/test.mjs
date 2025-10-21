@@ -80,6 +80,7 @@ const testCases = [
   ['docs.base.org', ['n7VghBvQo9fKfh5nqf8XLRdgA5KpZc2xjjIla8XHO+k=', 1], false],
   ['drpc.org', ['59blMPXMrimFarphox8PzbXUl7EGzBkqQXlb2DjMJYU=', 1], false],
   ['euronews.com', ['00Qf2C8vDmh5NYlIspQWh06S9rkUgq37TTrzAP+Odtg=', 3], false],
+  ['fellou.ai', ['V9lzT6lt/awn/TLYKFlhRXSqolxZvA0nu2Ld5LL3Gkw=', 1], false],
   ['fortune.com', ['a1+3zJekpAmX/usMwCHTBbpo/osoiNAJpGCKuOBzoLE=', 1], false],
   ['freevideo.cz', undefined, false],
   ['github.com', undefined, false],

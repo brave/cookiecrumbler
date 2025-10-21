@@ -103,7 +103,7 @@ const hasManyFirstPartyLinks = async (getETLDP1, thisDomain, e) => {
  */
 const contentCheck = async (hostAPI, classifiersUsed, node) => {
   const innerText = node.innerText
-  if (innerText.trim() === '') {
+  if (innerText === undefined || innerText.trim() === '') {
     // some sites dump their cookie notices into iframes
     const iframes = node.querySelectorAll('iframe')
     for (const iframe of iframes) {
@@ -119,7 +119,7 @@ const contentCheck = async (hostAPI, classifiersUsed, node) => {
     }
     return false
   }
-  const { classifier, classification } = await hostAPI.classifyCookieNoticeText(node.innerText)
+  const { classifier, classification } = await hostAPI.classifyCookieNoticeText(innerText)
   classifiersUsed.add(classifier)
   return classification
 }

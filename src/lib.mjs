@@ -1,6 +1,6 @@
 'use strict'
 
-import { existsSync, readdirSync, cpSync, mkdirSync, writeFileSync } from 'fs'
+import { existsSync, readdirSync, mkdirSync, writeFileSync, constants as fsConstants } from 'fs'
 import fs from 'fs/promises'
 import os from 'os'
 import path from 'path'
@@ -88,7 +88,7 @@ export const checkPage = async (args) => {
   const workingProfile = await fs.mkdtemp(path.join(os.tmpdir(), 'cookiecrumbler-profile-'))
 
   try {
-    await fs.cp(templateProfile, workingProfile, { recursive: true })
+    await fs.cp(templateProfile, workingProfile, { recursive: true, mode: fsConstants.COPYFILE_FICLONE })
   } catch (err) {
     await fs.rm(workingProfile, { recursive: true })
     report.error = err.stack
@@ -350,7 +350,7 @@ export const prepareProfile = async (args) => {
 
   const adblockComponents = parseListCatalogComponentIds({ profileDir: tmpProfile })
 
-  readdirSync(tmpProfile).forEach(fileName => {
+  for (const fileName of readdirSync(tmpProfile)) {
     // check if valid component id and not in keeplist
     if (isValidChromeComponentId({ id: fileName }) && !isKeeplistedComponentId({ id: fileName, additionalComponentList: adblockComponents })) {
       console.log('patching component: ', fileName)
@@ -362,16 +362,16 @@ export const prepareProfile = async (args) => {
       mkdirSync(destPath, { recursive: true })
       if (fileName === 'gkboaolpopklhgplhaaiboijnklogmbc') {
         // copy List Catalog files after modifying version
-        cpSync(path.join(extensionDir, versionDir), destPath, { recursive: true })
+        await fs.cp(path.join(extensionDir, versionDir), destPath, { recursive: true, mode: fsConstants.COPYFILE_FICLONE })
       } else {
         // only copy the manifest for all other components
-        cpSync(srcManifest, path.join(destPath, 'manifest.json'))
+        await fs.cp(srcManifest, path.join(destPath, 'manifest.json'), { mode: fsConstants.COPYFILE_FICLONE })
       }
     } else {
       // copy all other files in profile directory, as well as keeplisted components
-      cpSync(`${tmpProfile}/${fileName}`, `${templateProfile}/${fileName}`, { recursive: true })
+      await fs.cp(`${tmpProfile}/${fileName}`, `${templateProfile}/${fileName}`, { recursive: true, mode: fsConstants.COPYFILE_FICLONE })
     }
-  })
+  }
 
   const optionalDefaultComponents = getOptionalDefaultComponentIds({ profileDir: tmpProfile })
   writeFileSync(path.join(import.meta.dirname, '..', 'adblock_lists.json'), JSON.stringify(optionalDefaultComponents, null, 2))

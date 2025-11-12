@@ -1,5 +1,4 @@
 # Base application image
-# TODO: replace image tag with lts-slim once it points to 24-trixie-slim
 FROM node:24-trixie-slim
 
 ARG FULL_CACHEBUST=0

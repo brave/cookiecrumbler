@@ -245,6 +245,9 @@ details pre {
         <select id="viewport-select" name="viewport">
           <option value="">default</option>
         </select>
+        <div id="device-viewport-warning" style="display: none; color: #d32f2f; margin-top: 0.5em; font-size: 0.9em;">
+          ⚠️ Cannot specify both device and viewport
+        </div>
       </fieldset>
 
       <fieldset id="dev_menu">
@@ -377,6 +380,20 @@ details pre {
               option.textContent = viewportName;
               viewportSelectElement.appendChild(option);
             });
+
+            // Setup device/viewport mutual exclusion warning
+            const warningElement = document.getElementById('device-viewport-warning');
+            const checkConflict = () => {
+              const deviceValue = devicesSelectElement.value;
+              const viewportValue = viewportSelectElement.value;
+              if (deviceValue && viewportValue) {
+                warningElement.style.display = 'block';
+              } else {
+                warningElement.style.display = 'none';
+              }
+            };
+            devicesSelectElement.addEventListener('change', checkConflict);
+            viewportSelectElement.addEventListener('change', checkConflict);
           },
         };
         Object.keys(configEndpoints).forEach(endpoint => {
@@ -587,6 +604,14 @@ details pre {
 
       form.onsubmit = async (e) => {
         e.preventDefault();
+
+        // Validate device and viewport are not both selected
+        const deviceValue = document.getElementById('devices-select').value;
+        const viewportValue = document.getElementById('viewport-select').value;
+        if (deviceValue && viewportValue) {
+          alert('Cannot specify both device and viewport. Please select only one.');
+          return;
+        }
 
         urlInput.disabled = true;
         locationSelector.disabled = true;

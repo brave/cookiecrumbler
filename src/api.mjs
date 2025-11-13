@@ -16,6 +16,7 @@ import { Semaphore, withTimeout } from 'async-mutex'
 
 import { checkPage } from './lib.mjs'
 import { getFilteredKnownDevices } from './setupUtil.mjs'
+import { VIEWPORT_PRESETS } from './puppeteer.mjs'
 
 // Calculate default max concurrency based on available memory
 const totalMemoryMB = os.totalmem() / (1024 * 1024)
@@ -95,8 +96,11 @@ router.get('/proxy_list.json', async (ctx) => {
 
 const filteredDevices = getFilteredKnownDevices()
 
-router.get('/device_list.json', async (ctx) => {
-  ctx.body = filteredDevices
+router.get('/options.json', async (ctx) => {
+  ctx.body = {
+    devices: filteredDevices,
+    viewports: Object.keys(VIEWPORT_PRESETS)
+  }
   ctx.response.type = 'json'
 })
 
@@ -111,13 +115,28 @@ router.post('/check', async (ctx) => {
     slowCheck,
     device,
     mhtmlMode,
-    includeMhtml
+    includeMhtml,
+    viewport
   } = ctx.request.body
 
   // Validate device name
   if (device && !filteredDevices.includes(device)) {
     ctx.status = 400
     ctx.body = { error: 'Bad Request: unknown device' }
+    return
+  }
+
+  // Validate viewport preset
+  if (viewport && !Object.keys(VIEWPORT_PRESETS).includes(viewport)) {
+    ctx.status = 400
+    ctx.body = { error: 'Bad Request: unknown viewport preset' }
+    return
+  }
+
+  // Ensure device and viewport are not both set (mutually exclusive)
+  if (device && viewport) {
+    ctx.status = 400
+    ctx.body = { error: 'Bad Request: cannot specify both device and viewport' }
     return
   }
 
@@ -142,7 +161,8 @@ router.post('/check', async (ctx) => {
         slowCheck,
         device,
         mhtmlMode,
-        includeMhtml
+        includeMhtml,
+        viewport
       })
     })
 

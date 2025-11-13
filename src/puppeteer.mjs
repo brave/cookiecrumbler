@@ -1,5 +1,11 @@
 import { templateProfilePathForArgs } from './setupUtil.mjs'
 
+export const VIEWPORT_PRESETS = {
+  '1080p': { width: 1920, height: 1080 },
+  WQHD: { width: 2560, height: 1440 },
+  '4k': { width: 3840, height: 2160 }
+}
+
 export const puppeteerConfigForArgs = async (args) => {
   const puppeteerArgs = {
     defaultViewport: null,
@@ -19,6 +25,14 @@ export const puppeteerConfigForArgs = async (args) => {
       '--disable-sync'
     ],
     headless: !(args.interactive ?? false)
+  }
+
+  // If viewport preset is specified, set window size, and screen info
+  if (args.viewport && VIEWPORT_PRESETS[args.viewport]) {
+    const preset = VIEWPORT_PRESETS[args.viewport]
+    puppeteerArgs.args.push(`--window-size=${preset.width},${preset.height}`)
+    // Set the virtual screen dimensions (Chrome 135+): https://issues.chromium.org/issues/423334494
+    puppeteerArgs.args.push(`--screen-info={${preset.width}x${preset.height}}`)
   }
 
   if (args.debugLevel === 'verbose') {

@@ -201,7 +201,7 @@ details pre {
 }
 
 .copy-rules-button {
-  fontSize: 0.8em;
+  font-size: 0.8em;
   padding: 0.5em 1em;
   margin-bottom: 0.5em;
 }
@@ -240,6 +240,14 @@ details pre {
         <select id="devices-select" name="devices">
           <option value="">default</option>
         </select>
+        <br>
+        <label>Viewport:</label>
+        <select id="viewport-select" name="viewport">
+          <option value="">default</option>
+        </select>
+        <div id="device-viewport-warning" style="display: none; color: #d32f2f; margin-top: 0.5em; font-size: 0.9em;">
+          ⚠️ Cannot specify both device and viewport
+        </div>
       </fieldset>
 
       <fieldset id="dev_menu">
@@ -355,14 +363,37 @@ details pre {
               locationsSelectElement.appendChild(continentGroup);
             }
           },
-          device_list: device_list => {
+          options: options => {
+            // Populate devices
             const devicesSelectElement = document.getElementById('devices-select');
-            device_list.forEach(deviceName => {
+            options.devices.forEach(deviceName => {
               const option = document.createElement("option");
               option.value = deviceName;
               option.textContent = deviceName;
               devicesSelectElement.appendChild(option);
             });
+
+            const viewportSelectElement = document.getElementById('viewport-select');
+            options.viewports.forEach(viewportName => {
+              const option = document.createElement("option");
+              option.value = viewportName;
+              option.textContent = viewportName;
+              viewportSelectElement.appendChild(option);
+            });
+
+            // Setup device/viewport mutual exclusion warning
+            const warningElement = document.getElementById('device-viewport-warning');
+            const checkConflict = () => {
+              const deviceValue = devicesSelectElement.value;
+              const viewportValue = viewportSelectElement.value;
+              if (deviceValue && viewportValue) {
+                warningElement.style.display = 'block';
+              } else {
+                warningElement.style.display = 'none';
+              }
+            };
+            devicesSelectElement.addEventListener('change', checkConflict);
+            viewportSelectElement.addEventListener('change', checkConflict);
           },
         };
         Object.keys(configEndpoints).forEach(endpoint => {
@@ -574,6 +605,14 @@ details pre {
       form.onsubmit = async (e) => {
         e.preventDefault();
 
+        // Validate device and viewport are not both selected
+        const deviceValue = document.getElementById('devices-select').value;
+        const viewportValue = document.getElementById('viewport-select').value;
+        if (deviceValue && viewportValue) {
+          alert('Cannot specify both device and viewport. Please select only one.');
+          return;
+        }
+
         urlInput.disabled = true;
         locationSelector.disabled = true;
         executeButton.disabled = true;
@@ -604,7 +643,8 @@ details pre {
             slowCheck: document.getElementById('slow_check').checked,
             device: document.getElementById('devices-select').value,
             mhtmlMode: document.getElementById('mhtml-mode-select')?.value || 'full',
-            includeMhtml: document.getElementById('mhtml-include-select')?.value || 'never'
+            includeMhtml: document.getElementById('mhtml-include-select')?.value || 'never',
+            viewport: document.getElementById('viewport-select').value
           }),
         })
           .then(resp => resp.json())

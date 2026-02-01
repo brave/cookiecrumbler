@@ -12,8 +12,8 @@
     "rebrowser-patches": "rebrowser-patches patch --packageName puppeteer-core",
     "test": "node --test test/test.mjs",
     "test:ci": "node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=@reporters/github --test-reporter-destination=stdout test/test.mjs",
-    "lint": "standard",
-    "lint-fix": "standard --fix",
+    "lint": "eslint",
+    "lint-fix": "eslint --fix",
     "build": "esbuild --bundle --format=cjs --sourcemap --outdir=bundles src/inpage/index.mjs",
     "watch": "npm run build -- --watch"
   },
@@ -42,6 +42,7 @@
   "devDependencies": {
     "@reporters/github": "1.12.0",
     "esbuild": "0.27.2",
-    "standard": "17.1.2"
+    "eslint": "^9.39.2",
+    "neostandard": "^0.12.2"
   }
 }

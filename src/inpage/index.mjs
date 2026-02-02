@@ -1,5 +1,3 @@
-/* eslint-env browser */
-
 import { generateRandomToken } from '../util.mjs'
 
 const windowRect = {

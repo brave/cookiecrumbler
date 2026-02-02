@@ -267,6 +267,10 @@ details pre {
           </select>
         </label>
         <br>
+        <label>User Agent:
+          <input type="text" id="user-agent-input" name="user-agent" placeholder="Custom user agent string" style="width: 25em; font-family: monospace;">
+        </label>
+        <br>
       </fieldset>
       </div>
     </form>
@@ -644,7 +648,8 @@ details pre {
             device: document.getElementById('devices-select').value,
             mhtmlMode: document.getElementById('mhtml-mode-select')?.value || 'full',
             includeMhtml: document.getElementById('mhtml-include-select')?.value || 'never',
-            viewport: document.getElementById('viewport-select').value
+            viewport: document.getElementById('viewport-select').value,
+            userAgent: document.getElementById('user-agent-input')?.value
           }),
         })
           .then(resp => resp.json())

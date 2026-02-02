@@ -116,7 +116,8 @@ router.post('/check', async (ctx) => {
     device,
     mhtmlMode,
     includeMhtml,
-    viewport
+    viewport,
+    userAgent
   } = ctx.request.body
 
   // Validate device name
@@ -162,7 +163,8 @@ router.post('/check', async (ctx) => {
         device,
         mhtmlMode,
         includeMhtml,
-        viewport
+        viewport,
+        userAgent
       })
     })
 

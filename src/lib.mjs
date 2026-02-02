@@ -76,6 +76,7 @@ export const checkPage = async (args) => {
   const deviceName = args.device
   const mhtmlMode = args.mhtmlMode ?? 'full'
   const includeMhtml = args.includeMhtml ?? 'never'
+  const userAgent = args.userAgent
 
   const report = {
     originalUrl: url,
@@ -143,6 +144,11 @@ export const checkPage = async (args) => {
     if (deviceName) {
       const device = KnownDevices[deviceName]
       await page.emulate(device)
+    }
+
+    // Set custom user agent if provided (overrides device user agent)
+    if (userAgent) {
+      await page.setUserAgent(userAgent)
     }
 
     await Sentry.startSpan({ name: 'domcontentloaded' }, () => {

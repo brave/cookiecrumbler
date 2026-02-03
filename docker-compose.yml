@@ -28,7 +28,7 @@ services:
         condition: service_healthy
 
   litellm:
-    image: ghcr.io/berriai/litellm:main-v1.52.0-stable
+    image: ghcr.io/berriai/litellm:main-v1.81.6-nightly
     profiles:
       - litellm
     restart: unless-stopped
@@ -44,7 +44,8 @@ services:
       - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}
       - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN}
       - DATABASE_URL=postgresql://llmproxy:llmproxy@litellm_db:5432/litellm
-      - STORE_MODEL_IN_DB=False
+      - STORE_MODEL_IN_DB=True
+      - STORE_PROMPTS_IN_SPEND_LOGS=True
       - LITELLM_MASTER_KEY=sk-litellm
     healthcheck:  # Defines the health check configuration for the container
         test:

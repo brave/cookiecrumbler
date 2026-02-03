@@ -178,6 +178,19 @@ details pre {
   cursor: help;
 }
 
+.unsupported-warning {
+  background: hsl(0deg 90% 95%);
+  color: hsl(0deg 70% 35%);
+  padding: 0.25em 1em;
+  border-radius: 0.25em;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+}
+.unsupported-warning-icon {
+  color: hsl(0deg 85% 45%);
+}
+
 #locations {
   display: none;
 }
@@ -511,7 +524,13 @@ details pre {
 
         if (report.scrollBlocked === true) {
           const p = document.createElement('p');
-          p.textContent = 'Scrolling may be prevented on this page.';
+          p.textContent = '⚠️ Scrolling may be prevented on this page.';
+          card.appendChild(p);
+        }
+
+        if (report.unsupportedBrowser === true) {
+          const p = document.createElement('p');
+          p.textContent = '🚫 An "unsupported browser" message was detected on this page.';
           card.appendChild(p);
         }
 

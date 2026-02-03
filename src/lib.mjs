@@ -24,7 +24,7 @@ import { puppeteerConfigForArgs } from './puppeteer.mjs'
 import { templateProfilePathForArgs, parseListCatalogComponentIds, isValidChromeComponentId, isKeeplistedComponentId, getExtensionVersion, getOptionalDefaultComponentIds, replaceVersion, toggleAdblocklists, proxyUrlWithAuth, checkAllComponentsRegistered, fixupBundleStackTrace, getBundlePaths } from './setupUtil.mjs'
 import { generateRandomToken } from './util.mjs'
 
-import { cookieNoticeClassifier } from './text-classification.mjs'
+import { cookieNoticeClassifier, browserNoticeClassifier } from './text-classification.mjs'
 
 const openai = new OpenAI({
   baseURL: process.env.OPENAI_BASE_URL || 'http://localhost:11434/v1',
@@ -37,6 +37,9 @@ const inPageAPI = {
   },
   classifyCookieNoticeText: (innerText) => {
     return cookieNoticeClassifier(innerText, openai)
+  },
+  classifyBrowserNoticeText: (innerText) => {
+    return browserNoticeClassifier(innerText, openai)
   },
   getETLDP1: (() => {
     let init
@@ -110,7 +113,7 @@ export const checkPage = async (args) => {
   })
 
   const page = await browser.newPage()
-
+  
   try {
     if (blockNonHttpRequests) {
       if (!url.startsWith('http://') && !url.startsWith('https://')) {
@@ -272,6 +275,7 @@ export const checkPage = async (args) => {
         report.screenshot = screenshotB64
       }
       report.scrollBlocked = ((await inPageResult.evaluate(r => r.scrollBlocked)) === true)
+      report.unsupportedBrowser = ((await inPageResult.evaluate(r => r.unsupportedBrowser)) === true)
     } catch (err) {
       report.error = err.stack
     } finally {

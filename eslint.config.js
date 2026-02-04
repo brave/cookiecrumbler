@@ -10,7 +10,10 @@ module.exports = [
   {
     files: ['src/inpage/**/*.mjs'],
     languageOptions: {
-      globals: globals.browser,
+      globals: {
+        ...globals.browser,
+        URLPattern: 'readonly',
+      },
     },
   },
 ]

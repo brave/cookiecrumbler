@@ -113,7 +113,7 @@ export const checkPage = async (args) => {
   })
 
   const page = await browser.newPage()
-  
+
   try {
     if (blockNonHttpRequests) {
       if (!url.startsWith('http://') && !url.startsWith('https://')) {

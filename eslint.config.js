@@ -4,7 +4,7 @@ const globals = require('globals')
 
 module.exports = [
   ...require('neostandard')({
-    ignores: ['test/**', 'bundles/*'],
+    ignores: ['test/data/**', 'bundles/*'],
     semi: false,
   }),
   {

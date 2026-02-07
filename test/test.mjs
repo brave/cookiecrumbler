@@ -74,8 +74,8 @@ async function testPage (t, testCasePath, expectedCookieNotice, expectedScrollBl
     } else {
       t.assert.strictEqual(r.unsupportedBrowser, unsupportedBrowser,
         `expected unsupported browser result [${unsupportedBrowser}] did not match detected result [${r.unsupportedBrowser}]`)
-      }
-    })
+    }
+  })
 }
 
 const testCases = [

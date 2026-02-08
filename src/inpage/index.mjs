@@ -221,9 +221,8 @@ function collectBrowserNoticeCandidates () {
   // First collect all matches, then filter to innermost elements to avoid duplicates from nesting
   const browserSupportElements = []
   for (const el of document.querySelectorAll('p, span, div, h1, h2, h3, h4, h5, h6, li, td, th, label')) {
-    if (!isVisible(el)) continue
     const text = (el.textContent || '').toLowerCase()
-    if (text.includes('browser') && text.includes('support')) {
+    if (text.includes('browser') && text.includes('support') && isVisible(el)) {
       browserSupportElements.push(el)
     }
   }

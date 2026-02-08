@@ -28,7 +28,7 @@ services:
         condition: service_healthy
 
   litellm:
-    image: ghcr.io/berriai/litellm:main-v1.81.6-nightly
+    image: ghcr.io/berriai/litellm:main-v1.81.6.rc.2
     profiles:
       - litellm
     restart: unless-stopped

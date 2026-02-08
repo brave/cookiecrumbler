@@ -275,7 +275,7 @@ export const checkPage = async (args) => {
         report.screenshot = screenshotB64
       }
       report.scrollBlocked = ((await inPageResult.evaluate(r => r.scrollBlocked)) === true)
-      report.unsupportedBrowser = ((await inPageResult.evaluate(r => r.unsupportedBrowser)) === true)
+      report.unsupportedBrowser = (await inPageResult.evaluate(r => r.unsupportedBrowser)) ?? null
     } catch (err) {
       report.error = err.stack
     } finally {

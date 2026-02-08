@@ -39,9 +39,9 @@ const isVisible = node => {
   }
   const nodeRect = node.getBoundingClientRect()
   if (nodeRect.left >= windowRect.right ||
-      nodeRect.right <= windowRect.left ||
-      nodeRect.top >= windowRect.bottom ||
-      nodeRect.bottom <= windowRect.top) {
+    nodeRect.right <= windowRect.left ||
+    nodeRect.top >= windowRect.bottom ||
+    nodeRect.bottom <= windowRect.top) {
     return false
   }
   return true
@@ -152,7 +152,7 @@ const expandDetectedCookieNotice = (node) => {
       nodeRect.top === windowRect.top &&
       nodeRect.bottom === windowRect.bottom &&
       (style.backgroundColor.startsWith('rgba(') ||
-      style.backdropFilter !== 'none')) {
+        style.backdropFilter !== 'none')) {
       innermostHideableElement = outermostHideableElement
       hideableElementRange = 1
     }
@@ -206,7 +206,7 @@ function collectBrowserNoticeCandidates () {
   for (const link of document.querySelectorAll('a[href]')) {
     const text = (link.textContent || '').toLowerCase()
     if (BROWSER_URL_PATTERNS.some(p => p.test(link.href)) ||
-        BROWSER_LINK_LABELS.some(l => text.includes(l.toLowerCase()))) {
+      BROWSER_LINK_LABELS.some(l => text.includes(l.toLowerCase()))) {
       browserLinkCount++
       const outer = link.parentElement
       if (browserLinkCount >= 2) {
@@ -295,7 +295,7 @@ export async function inPageRoutine (randomToken, hostOverride) {
   if (browserNoticeCandidates.length > 0) {
     const candidateText = browserNoticeCandidates.join('\n')
     const result = await hostAPI.classifyBrowserNoticeText(candidateText)
-    unsupportedBrowser = result.classification
+    unsupportedBrowser = result?.classification ?? null
   }
 
   // Restore styles (for Puppeteer screenshots)

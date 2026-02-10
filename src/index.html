@@ -511,7 +511,13 @@ details pre {
 
         if (report.scrollBlocked === true) {
           const p = document.createElement('p');
-          p.textContent = 'Scrolling may be prevented on this page.';
+          p.textContent = '⚠️ Scrolling may be prevented on this page.';
+          card.appendChild(p);
+        }
+
+        if (report.unsupportedBrowser === true) {
+          const p = document.createElement('p');
+          p.textContent = '🚫 An "unsupported browser" message was detected on this page.';
           card.appendChild(p);
         }
 

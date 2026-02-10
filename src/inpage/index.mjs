@@ -39,9 +39,9 @@ const isVisible = node => {
   }
   const nodeRect = node.getBoundingClientRect()
   if (nodeRect.left >= windowRect.right ||
-      nodeRect.right <= windowRect.left ||
-      nodeRect.top >= windowRect.bottom ||
-      nodeRect.bottom <= windowRect.top) {
+    nodeRect.right <= windowRect.left ||
+    nodeRect.top >= windowRect.bottom ||
+    nodeRect.bottom <= windowRect.top) {
     return false
   }
   return true
@@ -152,7 +152,7 @@ const expandDetectedCookieNotice = (node) => {
       nodeRect.top === windowRect.top &&
       nodeRect.bottom === windowRect.bottom &&
       (style.backgroundColor.startsWith('rgba(') ||
-      style.backdropFilter !== 'none')) {
+        style.backdropFilter !== 'none')) {
       innermostHideableElement = outermostHideableElement
       hideableElementRange = 1
     }
@@ -178,12 +178,68 @@ const expandDetectedCookieNotice = (node) => {
   }
 }
 
+// URL patterns to detect browser download links
+const BROWSER_URL_PATTERNS = [
+  '*://*.google.com/*chrome/*',
+  '*://*.mozilla.org/*firefox/*',
+  '*://*.getfirefox.com/*',
+  '*://*.microsoft.com/*edge*',
+  '*://*.apple.com/*safari*',
+].map(p => new URLPattern(p))
+
+const BROWSER_LINK_LABELS = [
+  'Chrome',
+  'Firefox',
+  'Edge',
+  'Safari',
+]
+
+/**
+ * Collects candidate texts for "unsupported browser" page detection.
+ */
+function collectBrowserNoticeCandidates () {
+  let browserLinkCount = 0
+  const candidates = []
+
+  // Check links for browser URLs and labels for browser names,
+  // add the text of the outermost element to candidates if there are 2+ matches
+  for (const link of document.querySelectorAll('a[href]')) {
+    const text = (link.textContent || '').toLowerCase()
+    if (BROWSER_URL_PATTERNS.some(p => p.test(link.href)) ||
+      BROWSER_LINK_LABELS.some(l => text.includes(l.toLowerCase()))) {
+      browserLinkCount++
+      const outer = link.parentElement
+      if (browserLinkCount >= 2) {
+        const outerText = (outer?.innerText || '').trim()
+        if (outerText) candidates.push(outerText)
+        break
+      }
+    }
+  }
+
+  // Check visible text elements for "browser" + "support"
+  // First collect all matches, then filter to innermost elements to avoid duplicates from nesting
+  const browserSupportElements = []
+  for (const el of document.querySelectorAll('p, span, div, h1, h2, h3, h4, h5, h6, li, td, th, label')) {
+    const text = (el.textContent || '').toLowerCase()
+    if (text.includes('browser') && text.includes('support') && isVisible(el)) {
+      browserSupportElements.push(el)
+    }
+  }
+  for (const el of nonParentElements(browserSupportElements)) {
+    const elText = (el.innerText || '').trim()
+    if (elText) candidates.push(elText)
+  }
+
+  return { candidates }
+}
+
 /**
  * This is the main routine that runs within a page and returns information about detected elements.
  * Function dependencies from the host can be accessed via the API exposed by `randomToken`.
  */
 export async function inPageRoutine (randomToken, hostOverride) {
-  const hostMethods = ['getETLDP1', 'classifyCookieNoticeText', 'extractFrameText']
+  const hostMethods = ['getETLDP1', 'classifyCookieNoticeText', 'classifyBrowserNoticeText', 'extractFrameText']
   const hostAPI = hostMethods.reduce((acc, v) => {
     acc[v] = (...args) => window[randomToken](v, ...args)
     return acc
@@ -232,6 +288,15 @@ export async function inPageRoutine (randomToken, hostOverride) {
     }
   }
 
+  // Unsupported browser notice detection
+  const { candidates: browserNoticeCandidates } = collectBrowserNoticeCandidates()
+  let unsupportedBrowser = false
+  if (browserNoticeCandidates.length > 0) {
+    const candidateText = browserNoticeCandidates.join('\n')
+    const result = await hostAPI.classifyBrowserNoticeText(candidateText)
+    unsupportedBrowser = result?.classification ?? null
+  }
+
   // Restore styles (for Puppeteer screenshots)
   identifiedCookieNotices.forEach(notice => {
     notice.outermostHideableElement.classList.remove(hideClass)
@@ -242,7 +307,8 @@ export async function inPageRoutine (randomToken, hostOverride) {
     cookieNotices: identifiedCookieNotices,
     classifiersUsed: Array.from(classifiersUsed).sort(),
     scrollBlocked,
-    url: window.location.href
+    unsupportedBrowser,
+    url: window.location.href,
   }
 }
 

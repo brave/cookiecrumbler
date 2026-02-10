@@ -24,10 +24,11 @@ services:
     profiles:
       - litellm
     depends_on:
-      - litellm
+      litellm:
+        condition: service_healthy
 
   litellm:
-    image: ghcr.io/berriai/litellm:main-v1.52.0-stable
+    image: ghcr.io/berriai/litellm:main-v1.81.6.rc.2
     profiles:
       - litellm
     restart: unless-stopped
@@ -43,8 +44,17 @@ services:
       - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}
       - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN}
       - DATABASE_URL=postgresql://llmproxy:llmproxy@litellm_db:5432/litellm
-      - STORE_MODEL_IN_DB=False
+      - STORE_MODEL_IN_DB=True
+      - STORE_PROMPTS_IN_SPEND_LOGS=True
       - LITELLM_MASTER_KEY=sk-litellm
+    healthcheck: # Defines the health check configuration for the container
+      test:
+        - CMD-SHELL
+        - python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness')" # Command to execute for health check
+      interval: 30s # Perform health check every 30 seconds
+      timeout: 10s # Health check command times out after 10 seconds
+      retries: 3 # Retry up to 3 times if health check fails
+      start_period: 40s # Wait 40 seconds after container start before beginning health checks
     depends_on:
       litellm_db:
         condition: service_healthy

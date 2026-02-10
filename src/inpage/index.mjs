@@ -201,17 +201,24 @@ function collectBrowserNoticeCandidates () {
   let browserLinkCount = 0
   const candidates = []
 
-  // Check links for browser URLs and labels for browser names,
-  // add the text of the outermost element to candidates if there are 2+ matches
+  // Check links for browser URL patterns or browser name labels.
+  // On the second match, walk up the DOM to find the nearest ancestor with
+  // text beyond just the matched link, and use that as a candidate.
   for (const link of document.querySelectorAll('a[href]')) {
     const text = (link.textContent || '').toLowerCase()
-    if (BROWSER_URL_PATTERNS.some(p => p.test(link.href)) ||
-      BROWSER_LINK_LABELS.some(l => text.includes(l.toLowerCase()))) {
+    if ((BROWSER_URL_PATTERNS.some(p => p.test(link.href)) ||
+      BROWSER_LINK_LABELS.some(l => text.includes(l.toLowerCase()))) && isVisible(link)) {
       browserLinkCount++
-      const outer = link.parentElement
       if (browserLinkCount >= 2) {
-        const outerText = (outer?.innerText || '').trim()
-        if (outerText) candidates.push(outerText)
+        let el = link
+        while (el.parentElement) {
+          const parentText = el.parentElement.innerText?.trim()
+          if (parentText && parentText !== el.innerText?.trim()) {
+            candidates.push(parentText)
+            break
+          }
+          el = el.parentElement
+        }
         break
       }
     }

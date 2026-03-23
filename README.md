@@ -5,7 +5,7 @@
 Cookiecrumbler automatically detects cookie consent notices on Web pages. It's intended to help with both detection of cookie consent notices that we don't currently block, and to identify webcompat reports as being related to cookie consent notice blocking. 
 
 > [!WARNING]
-> This tool navigates to arbitrary URLs using a real browser and should only be run in **isolated environments**. Exposing it on a network may introduce [Server-Side Request Forgery (SSRF)](https://owasp.org/www-community/attacks/Server-Side_Request_Forgery) risks, as an attacker could use it to reach internal services or metadata endpoints. Always deploy behind appropriate network-level controls and never run it on a host with access to sensitive internal resources.
+> This tool navigates to arbitrary URLs using a real browser and should only be run in **isolated environments**. Exposing it on a network may introduce [Server-Side Request Forgery (SSRF)](https://owasp.org/www-community/attacks/Server_Side_Request_Forgery) risks, as an attacker could use it to reach internal services or metadata endpoints. Always deploy behind appropriate network-level controls and never run it on a host with access to sensitive internal resources.
 
 ## Deployment status
 

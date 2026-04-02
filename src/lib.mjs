@@ -101,6 +101,20 @@ export const checkPage = async (args) => {
   const listCatalogPath = path.join(workingProfile, 'gkboaolpopklhgplhaaiboijnklogmbc', '999.999', 'list_catalog.json')
   toggleAdblocklists(listCatalogPath, args.adblockLists)
 
+  // Add individual filter rules to the custom filters list
+  if (args.additionalFilterRules?.length) {
+    const localStatePath = path.join(workingProfile, 'Local State')
+    const localState = JSON.parse(await fs.readFile(localStatePath, 'utf8'))
+    if (!localState.brave || !localState.brave.ad_block) {
+      report.error = 'Unexpected profile format: missing brave ad_block settings'
+      return report
+    }
+    const customFilters = localState.brave.ad_block.custom_filters || ''
+    const newFilters = customFilters + (customFilters ? '\n' : '') + args.additionalFilterRules.join('\n')
+    localState.brave.ad_block.custom_filters = newFilters
+    await fs.writeFile(localStatePath, JSON.stringify(localState))
+  }
+
   let proxyUrl
   if (args.location) {
     proxyUrl = await proxyChain.anonymizeProxy(proxyUrlWithAuth(args.location))

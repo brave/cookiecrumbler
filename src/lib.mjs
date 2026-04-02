@@ -101,6 +101,15 @@ export const checkPage = async (args) => {
   const listCatalogPath = path.join(workingProfile, 'gkboaolpopklhgplhaaiboijnklogmbc', '999.999', 'list_catalog.json')
   toggleAdblocklists(listCatalogPath, args.adblockLists)
 
+  // Add individual filter rules to the cookie blocker's list
+  if (args.additionalFilterRules?.length) {
+    const cookieComponentDir = path.join(workingProfile, 'cdbbhgbmjhfnhnmgeddbliobbofkgdhe')
+    const versionDir = getExtensionVersion(cookieComponentDir)
+    const listPath = path.join(cookieComponentDir, versionDir, 'list.txt')
+    const content = await fs.readFile(listPath, 'utf8')
+    await fs.writeFile(listPath, content + '\n' + args.additionalFilterRules.join('\n') + '\n')
+  }
+
   let proxyUrl
   if (args.location) {
     proxyUrl = await proxyChain.anonymizeProxy(proxyUrlWithAuth(args.location))

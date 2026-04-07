@@ -109,9 +109,8 @@ export const checkPage = async (args) => {
       report.error = 'Unexpected profile format: missing brave ad_block settings'
       return report
     }
-    const customFilters = localState.brave.ad_block.custom_filters || ''
-    const newFilters = customFilters + (customFilters ? '\n' : '') + args.additionalFilterRules.join('\n')
-    localState.brave.ad_block.custom_filters = newFilters
+    const additionalRulesText = args.additionalFilterRules.join('\n')
+    localState.brave.ad_block.custom_filters = additionalRulesText
     await fs.writeFile(localStatePath, JSON.stringify(localState))
   }
 

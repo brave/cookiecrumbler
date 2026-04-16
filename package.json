@@ -43,6 +43,7 @@
     "@reporters/github": "1.12.0",
     "esbuild": "0.27.4",
     "eslint": "9.39.4",
-    "neostandard": "0.12.2"
+    "neostandard": "0.12.2",
+    "tree-walker-shadow-dom": "^1.0.0"
   }
 }

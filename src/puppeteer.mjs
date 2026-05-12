@@ -6,6 +6,23 @@ export const VIEWPORT_PRESETS = {
   '4k': { width: 3840, height: 2160 }
 }
 
+const DEFAULT_DISABLED_FEATURES = [
+  'BraveAdblockCookieListDefault',
+  'BraveAdblockMobileNotificationsListDefault'
+]
+
+export const REQUEST_DISABLE_FEATURES_ALLOWLIST = [
+  'UseBraveUserAgent'
+]
+
+const mergedDisableFeatures = (requestedFeatures) => {
+  const requestedAllowedFeatures = Array.isArray(requestedFeatures)
+    ? requestedFeatures.filter(feature => REQUEST_DISABLE_FEATURES_ALLOWLIST.includes(feature))
+    : []
+
+  return [...new Set([...DEFAULT_DISABLED_FEATURES, ...requestedAllowedFeatures])]
+}
+
 export const puppeteerConfigForArgs = async (args) => {
   const puppeteerArgs = {
     defaultViewport: null,
@@ -16,7 +33,6 @@ export const puppeteerConfigForArgs = async (args) => {
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-gpu',
-      '--disable-features=BraveAdblockCookieListDefault,BraveAdblockMobileNotificationsListDefault',
       '--allow-brave-component-update',
       '--disable-component-update'
     ],
@@ -26,6 +42,9 @@ export const puppeteerConfigForArgs = async (args) => {
     ],
     headless: !(args.interactive ?? false)
   }
+
+  const disabledFeatures = mergedDisableFeatures(args.disableFeatures)
+  puppeteerArgs.args.push(`--disable-features=${disabledFeatures.join(',')}`)
 
   // If viewport preset is specified, set window size, and screen info
   if (args.viewport && VIEWPORT_PRESETS[args.viewport]) {

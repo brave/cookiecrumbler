@@ -16,7 +16,7 @@ import { Semaphore, withTimeout } from 'async-mutex'
 
 import { checkPage } from './lib.mjs'
 import { getFilteredKnownDevices } from './setupUtil.mjs'
-import { VIEWPORT_PRESETS } from './puppeteer.mjs'
+import { VIEWPORT_PRESETS, REQUEST_DISABLE_FEATURES_ALLOWLIST } from './puppeteer.mjs'
 
 // Calculate default max concurrency based on available memory
 const totalMemoryMB = os.totalmem() / (1024 * 1024)
@@ -99,7 +99,8 @@ const filteredDevices = getFilteredKnownDevices()
 router.get('/options.json', async (ctx) => {
   ctx.body = {
     devices: filteredDevices,
-    viewports: Object.keys(VIEWPORT_PRESETS)
+    viewports: Object.keys(VIEWPORT_PRESETS),
+    disableFeatures: REQUEST_DISABLE_FEATURES_ALLOWLIST
   }
   ctx.response.type = 'json'
 })
@@ -118,7 +119,8 @@ router.post('/check', async (ctx) => {
     mhtmlMode,
     includeMhtml,
     viewport,
-    userAgent
+    userAgent,
+    disableFeatures
   } = ctx.request.body
 
   // Validate device name
@@ -149,6 +151,26 @@ router.post('/check', async (ctx) => {
     return
   }
 
+  if (disableFeatures !== undefined) {
+    if (!Array.isArray(disableFeatures) || disableFeatures.some(feature => typeof feature !== 'string')) {
+      ctx.status = 400
+      ctx.body = { error: 'Bad Request: disableFeatures must be an array of strings' }
+      return
+    }
+
+    const invalidFeatures = disableFeatures.filter(
+      feature => !REQUEST_DISABLE_FEATURES_ALLOWLIST.includes(feature)
+    )
+    if (invalidFeatures.length) {
+      ctx.status = 400
+      ctx.body = {
+        error: 'Bad Request: disableFeatures contains unsupported values',
+        invalidFeatures
+      }
+      return
+    }
+  }
+
   try {
     const report = await semaphore.runExclusive(async () => {
       return await checkPage({
@@ -166,7 +188,8 @@ router.post('/check', async (ctx) => {
         mhtmlMode,
         includeMhtml,
         viewport,
-        userAgent
+        userAgent,
+        disableFeatures
       })
     })
 

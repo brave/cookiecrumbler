@@ -16,9 +16,10 @@ import * as Sentry from '@sentry/node'
 
 import OpenAI from 'openai'
 import proxyChain from 'proxy-chain'
-import puppeteer from 'puppeteer-extra'
+import { addExtra } from 'puppeteer-extra'
 import StealthPlugin from 'puppeteer-extra-plugin-stealth'
-import { KnownDevices } from 'puppeteer-core'
+import vanillaPuppeteer, { KnownDevices } from 'puppeteer-core'
+import userAgentOverride from './plugins/user-agent-override.mjs'
 
 import { puppeteerConfigForArgs } from './puppeteer.mjs'
 import { templateProfilePathForArgs, parseListCatalogComponentIds, isValidChromeComponentId, isKeeplistedComponentId, getExtensionVersion, getOptionalDefaultComponentIds, replaceVersion, toggleAdblocklists, proxyUrlWithAuth, checkAllComponentsRegistered, fixupBundleStackTrace, getBundlePaths } from './setupUtil.mjs'
@@ -120,12 +121,22 @@ export const checkPage = async (args) => {
     console.log(`Started local proxy server: ${proxyUrl}`)
   }
   const puppeteerArgs = await puppeteerConfigForArgs({ ...args, pathForProfile: workingProfile, proxyServer: proxyUrl })
+  const pptr = addExtra(vanillaPuppeteer)
+  const stealth = StealthPlugin()
+  stealth.enabledEvasions.delete('user-agent-override')
+  pptr.use(stealth)
+  const userAgentOverridePlugin = userAgentOverride({
+    ...(userAgent ? { userAgent } : {}),
+  })
+  pptr.use(userAgentOverridePlugin)
 
   const browser = await Sentry.startSpan({ name: 'Launch Browser' }, () => {
-    return puppeteer.use(StealthPlugin()).launch(puppeteerArgs)
+    return pptr.launch(puppeteerArgs)
   })
 
   const page = await browser.newPage()
+  // puppeteer-extra's async page hook can race with the first navigation.
+  await userAgentOverridePlugin.onPageCreated(page)
 
   try {
     if (blockNonHttpRequests) {
@@ -164,7 +175,7 @@ export const checkPage = async (args) => {
 
     // Set custom user agent if provided (overrides device user agent)
     if (userAgent) {
-      await page.setUserAgent(userAgent)
+      await page.setUserAgent(userAgent) // this will also override Sec-CH-UA
     }
 
     await Sentry.startSpan({ name: 'domcontentloaded' }, () => {
@@ -332,7 +343,7 @@ export const prepareProfile = async (args) => {
   console.log('Performing initial profile setup...')
   const puppeteerArgs = await puppeteerConfigForArgs({ ...args, pathForProfile: tmpProfile })
 
-  const browser = await puppeteer.launch(puppeteerArgs)
+  const browser = await vanillaPuppeteer.launch(puppeteerArgs)
 
   const page = await browser.newPage()
   // Give the browser some time to register/download adblock components

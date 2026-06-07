@@ -1,4 +1,5 @@
 import { generateRandomToken } from '../util.mjs'
+import createTreeWalker from 'tree-walker-shadow-dom'
 
 const windowRect = {
   left: 0,
@@ -13,7 +14,7 @@ const windowRect = {
  */
 const collectMatchingElements = (criteria) => {
   const elements = []
-  const walker = document.createTreeWalker(
+  const walker = createTreeWalker(
     document.documentElement,
     NodeFilter.SHOW_ELEMENT,
     e => criteria(e) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP

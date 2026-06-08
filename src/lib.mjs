@@ -99,7 +99,7 @@ export const checkPage = async (args) => {
     return report
   }
   const listCatalogPath = path.join(workingProfile, 'gkboaolpopklhgplhaaiboijnklogmbc', '999.999', 'list_catalog.json')
-  toggleAdblocklists(listCatalogPath, args.adblockLists)
+  toggleAdblocklists(listCatalogPath, args.adblockLists ?? {})
 
   // Add individual filter rules to the custom filters list
   if (args.additionalFilterRules?.length) {

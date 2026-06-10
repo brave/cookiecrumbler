@@ -39,7 +39,7 @@ import { PuppeteerExtraPlugin } from 'puppeteer-extra-plugin'
  * @param {Object} [opts] - Options
  * @param {string} [opts.userAgent] - The user agent to use (default: browser.userAgent())
  * @param {string} [opts.locale] - The locale to use in `Accept-Language` header and in `navigator.languages` (default: `en-US,en`)
- * @param {boolean} [opts.maskLinux] - Wether to hide Linux as platform in the user agent or not - true by default
+ * @param {boolean} [opts.maskLinux] - Whether to hide Linux as platform in the user agent or not - true by default
  *
  */
 class Plugin extends PuppeteerExtraPlugin {

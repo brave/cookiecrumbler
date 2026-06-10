@@ -10,7 +10,7 @@ import { PuppeteerExtraPlugin } from 'puppeteer-extra-plugin'
  *
  * If you don't provide any values this plugin will default to using the regular UserAgent string (while stripping the headless part).
  * Default language is set to "en-US,en", the other settings match the UserAgent string.
- * If you are running on Linux, it will mask the settins to look like Windows. This behavior can be disabled with the `maskLinux` option.
+ * If you are running on Linux, it will mask the settings to look like Windows. This behavior can be disabled with the `maskLinux` option.
  *
  * By default puppeteer will not set a `Accept-Language` header in headless:
  * It's (theoretically) possible to fix that using either `page.setExtraHTTPHeaders` or a `--lang` launch arg.

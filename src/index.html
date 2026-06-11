@@ -271,6 +271,11 @@ details pre {
           <input type="text" id="user-agent-input" name="user-agent" placeholder="Custom user agent string" style="width: 25em; font-family: monospace;">
         </label>
         <br>
+        <label>Disable features:</label>
+        <fieldset id="disable-features-list">
+          <legend>Chromium feature flags</legend>
+        </fieldset>
+        <br>
       </fieldset>
       </div>
     </form>
@@ -383,6 +388,23 @@ details pre {
               option.value = viewportName;
               option.textContent = viewportName;
               viewportSelectElement.appendChild(option);
+            });
+
+            const disableFeaturesFieldset = document.getElementById('disable-features-list');
+            (options.disableFeatures || []).forEach(featureName => {
+              const checkbox = document.createElement('input');
+              checkbox.type = 'checkbox';
+              checkbox.id = `disable-feature-${featureName}`;
+              checkbox.name = 'disable-features';
+              checkbox.value = featureName;
+
+              const label = document.createElement('label');
+              label.htmlFor = checkbox.id;
+              label.textContent = featureName;
+
+              disableFeaturesFieldset.appendChild(checkbox);
+              disableFeaturesFieldset.appendChild(label);
+              disableFeaturesFieldset.appendChild(document.createElement('br'));
             });
 
             // Setup device/viewport mutual exclusion warning
@@ -639,6 +661,9 @@ details pre {
                 acc[checkbox.id] = checkbox.checked;
                 return acc;
             }, {});
+        const disableFeatures = Array.from(
+          document.querySelectorAll('#disable-features-list input[type="checkbox"]:checked')
+        ).map(checkbox => checkbox.value);
         const newCard = await fetch('/check', {
           method: 'POST',
           cache: 'no-cache',
@@ -655,7 +680,8 @@ details pre {
             mhtmlMode: document.getElementById('mhtml-mode-select')?.value || 'full',
             includeMhtml: document.getElementById('mhtml-include-select')?.value || 'never',
             viewport: document.getElementById('viewport-select').value,
-            userAgent: document.getElementById('user-agent-input')?.value
+            userAgent: document.getElementById('user-agent-input')?.value,
+            disableFeatures
           }),
         })
           .then(resp => resp.json())

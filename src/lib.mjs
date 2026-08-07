@@ -120,7 +120,13 @@ export const checkPage = async (args) => {
     proxyUrl = await proxyChain.anonymizeProxy(proxyUrlWithAuth(args.location))
     console.log(`Started local proxy server: ${proxyUrl}`)
   }
-  const puppeteerArgs = await puppeteerConfigForArgs({ ...args, pathForProfile: workingProfile, proxyServer: proxyUrl })
+  const puppeteerArgs = await puppeteerConfigForArgs({
+    ...args,
+    pathForProfile: workingProfile,
+    proxyServer: proxyUrl,
+    // Prevent mid-check Brave component downloads; setup must not set this.
+    invalidateComponentUpdater: true
+  })
   const pptr = addExtra(vanillaPuppeteer)
   const stealth = StealthPlugin()
   stealth.enabledEvasions.delete('user-agent-override')

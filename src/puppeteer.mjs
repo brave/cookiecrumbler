@@ -15,6 +15,14 @@ export const REQUEST_DISABLE_FEATURES_ALLOWLIST = [
   'UseBraveUserAgent'
 ]
 
+/**
+ * Non-resolving URL used for check requests so the browser cannot fetch
+ * component updates even when --allow-brave-component-update is set.
+ * (.invalid is a reserved TLD that never resolves.)
+ * Setup must keep default
+ */
+export const INVALID_COMPONENT_UPDATER_URL = 'https://localhost.invalid/'
+
 const mergedDisableFeatures = (requestedFeatures) => {
   const requestedAllowedFeatures = Array.isArray(requestedFeatures)
     ? requestedFeatures.filter(feature => REQUEST_DISABLE_FEATURES_ALLOWLIST.includes(feature))
@@ -41,6 +49,12 @@ export const puppeteerConfigForArgs = async (args) => {
       '--disable-sync'
     ],
     headless: !(args.interactive ?? false)
+  }
+
+  // Check requests only: override the component updater so Brave cannot
+  // download updates. Setup must not set invalidateComponentUpdater.
+  if (args.invalidateComponentUpdater) {
+    puppeteerArgs.args.push(`--component-updater=url-source=${INVALID_COMPONENT_UPDATER_URL}`)
   }
 
   const disabledFeatures = mergedDisableFeatures(args.disableFeatures)

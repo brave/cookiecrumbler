@@ -40,7 +40,7 @@
     "unified": "^11.0.4"
   },
   "devDependencies": {
-    "@reporters/github": "2.0.1",
+    "@reporters/github": "2.0.2",
     "esbuild": "0.28.1",
     "eslint": "9.39.5",
     "neostandard": "0.12.2",

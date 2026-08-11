@@ -283,6 +283,10 @@ export async function inPageRoutine (randomToken, hostOverride) {
   stylesheet.textContent = '.' + hideClass + ' { display: none !important }'
   document.head.appendChild(stylesheet)
 
+  // Detect if there is a full-page overlay that contains no text. This is likely due to a cookie notice that is hidden, without the overlay being removed. 
+  // This is a common issue on some sites, and can block interaction with the page.
+  let problematicOverlay = findProblematicOverlay()
+
   // Scroll blocking detection
   let scrollBlocked = false
   if (document.querySelectorAll('dialog[open]').length === 0) {
@@ -290,7 +294,7 @@ export async function inPageRoutine (randomToken, hostOverride) {
       getComputedStyle(document.documentElement).overflowY === 'hidden') {
       // Scroll is blocked. This could be intentional if there's an actionable popup in front of it,
       // but if there's an empty overlay at the front of the page, it's almost certainly an issue.
-      if (findProblematicOverlay()) {
+      if (problematicOverlay) {
         scrollBlocked = true
       }
     }
@@ -315,6 +319,7 @@ export async function inPageRoutine (randomToken, hostOverride) {
     cookieNotices: identifiedCookieNotices,
     classifiersUsed: Array.from(classifiersUsed).sort(),
     scrollBlocked,
+    problematicOverlay,
     unsupportedBrowser,
     url: window.location.href,
   }

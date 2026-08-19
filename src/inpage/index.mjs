@@ -283,9 +283,9 @@ export async function inPageRoutine (randomToken, hostOverride) {
   stylesheet.textContent = '.' + hideClass + ' { display: none !important }'
   document.head.appendChild(stylesheet)
 
-  // Detect if there is a full-page overlay that contains no text. This is likely due to a cookie notice that is hidden, without the overlay being removed. 
+  // Detect if there is a full-page overlay that contains no text. This is likely due to a cookie notice that is hidden, without the overlay being removed.
   // This is a common issue on some sites, and can block interaction with the page.
-  let problematicOverlay = findProblematicOverlay()
+  const problematicOverlay = findProblematicOverlay()
 
   // Scroll blocking detection
   let scrollBlocked = false

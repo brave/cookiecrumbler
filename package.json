@@ -18,6 +18,9 @@
     "watch": "npm run build -- --watch"
   },
   "main": "src/lib.mjs",
+  "overrides": {
+    "@puppeteer/browsers": "3.2.1"
+  },
   "dependencies": {
     "@gorhill/publicsuffixlist": "^3.0.1",
     "@koa/bodyparser": "^6.0.0",

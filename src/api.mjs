@@ -175,7 +175,7 @@ router.post('/check', async (ctx) => {
     const report = await semaphore.runExclusive(async () => {
       return await checkPage({
         url,
-        seconds: seconds || 4,
+        seconds: seconds || 6,
         executablePath: browserBinaryPath,
         adblockLists,
         additionalFilterRules,

@@ -25,6 +25,10 @@ import { puppeteerConfigForArgs } from './puppeteer.mjs'
 import { templateProfilePathForArgs, parseListCatalogComponentIds, isValidChromeComponentId, isKeeplistedComponentId, getExtensionVersion, getOptionalDefaultComponentIds, replaceVersion, toggleAdblocklists, proxyUrlWithAuth, checkAllComponentsRegistered, fixupBundleStackTrace, getBundlePaths } from './setupUtil.mjs'
 import { generateRandomToken } from './util.mjs'
 
+import { spawn } from 'node:child_process'
+import { once } from 'node:events'
+import net from 'node:net'
+
 import { cookieNoticeClassifier, browserNoticeClassifier } from './text-classification.mjs'
 
 const openai = new OpenAI({
@@ -80,6 +84,7 @@ export const checkPage = async (args) => {
   const deviceName = args.device
   const mhtmlMode = args.mhtmlMode ?? 'full'
   const includeMhtml = args.includeMhtml ?? 'never'
+  const wprGo = args.wprGo
   const userAgent = args.userAgent
 
   const report = {
@@ -116,14 +121,58 @@ export const checkPage = async (args) => {
   }
 
   let proxyUrl
+  if (wprGo && args.location) {
+    report.error = 'Specifying a proxy is currently unsupported when using WprGo'
+    return report
+  }
+  let wprGoProxyProcess
+  let wprGoTmpDir
+  let wprGoPath = wprGo.path
+  let wprGoPorts
   if (args.location) {
     proxyUrl = await proxyChain.anonymizeProxy(proxyUrlWithAuth(args.location))
     console.log(`Started local proxy server: ${proxyUrl}`)
+  } else if (wprGo !== undefined) {
+    if (wprGo.action !== 'record' && wprGo.action !== 'replay') {
+      report.error = `Unknown WprGo action: ${wprGo.action}`
+      return report
+    }
+
+    if (!wprGoPath) {
+      if (wprGo.action === 'record') {
+        wprGoTmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cookiecrumbler-wprgo-archive-'))
+        wprGoPath = path.join(wprGoTmpDir, 'archive.wprgo')
+      } else {
+        report.error = 'WprGo archive path is required for replay action'
+        return report
+      }
+    }
+
+    const httpPortRes = new PortReservation()
+    const httpsPortRes = new PortReservation()
+
+    const [http, https] = await Promise.all([httpPortRes.take(), httpsPortRes.take()])
+
+    wprGoPorts = {
+      http,
+      https,
+    }
+
+    const extraWprGoArgs = []
+    if (wprGo.action === 'replay') {
+      extraWprGoArgs.push('--inject-archive-scripts=true')
+    }
+
+    // TODO path to wprgo binary?
+    wprGoProxyProcess = spawn('./src/wpr', [wprGo.action, ...extraWprGoArgs, `--http-port=${wprGoPorts.http}`, `--https-port=${wprGoPorts.https}`, wprGoPath], { stdio: 'inherit', cwd: './webpagereplay' })
+    // TODO delay here is hacky but we must wait for wpr to become ready
+    await setTimeout(500)
   }
   const puppeteerArgs = await puppeteerConfigForArgs({
     ...args,
     pathForProfile: workingProfile,
     proxyServer: proxyUrl,
+    wprGoPorts,
     // Prevent mid-check Brave component downloads; setup must not set this.
     invalidateComponentUpdater: true
   })
@@ -325,6 +374,45 @@ export const checkPage = async (args) => {
     await fs.rm(workingProfile, { recursive: true })
   }
 
+  if (wprGoProxyProcess !== undefined) {
+    if (wprGoProxyProcess.exitCode !== null || wprGoProxyProcess.signalCode !== null) {
+      report.error = 'WprGo process exited prematurely'
+      return report
+    }
+
+    const exited = once(wprGoProxyProcess, 'close')
+    wprGoProxyProcess.kill('SIGINT')
+
+    try {
+      const killTimeoutSeconds = 10
+      await Promise.race([
+        exited,
+        async (_, reject) => {
+          await setTimeout(killTimeoutSeconds * 1000)
+          reject(new Error(`WprGo process failed to exit within ${killTimeoutSeconds} seconds`))
+        },
+      ])
+
+      if (wprGo.action === 'record') {
+        // timeout is hacky but there isn't a reliable way to wait for WprGo to finish write-on-exit
+        await setTimeout(1000)
+        console.log(`Reading from ${wprGoPath}`)
+        report.wpr = await fs.readFile(wprGoPath, 'base64')
+        console.log(`Read ${report.wpr.length} bytes`)
+      }
+    } catch(e) {
+      if (wprGoProxyProcess.exitCode === null && wprGoProxyProcess.signalCode === null) {
+        wprGoProxyProcess.kill('SIGKILL')
+      }
+      await exited
+      report.error = `WprGo failure: ${e.message}`
+    }
+
+    if (wprGoTmpDir !== undefined) {
+      await fs.rm(wprGoTmpDir, { recursive: true })
+    }
+  }
+
   report.scriptSources = Array.from(report.scriptSources) // Convert Set to Array
   return report
 }
@@ -418,4 +506,45 @@ export const prepareProfile = async (args) => {
 
   await fs.rm(tmpProfile, { recursive: true })
   console.log('Done. Profile has been prepared for future use.')
+}
+
+/**
+ * Reserve a usable port from the OS for later use.
+ */
+class PortReservation {
+  constructor() {
+    this._server = net.createServer()
+    this._taken = false
+
+    this._ready = new Promise((resolve, reject) => {
+      this._server.once('error', reject)
+      this._server.listen(0, '127.0.0.1', () => {
+        this._server.removeListener('error', reject)
+        resolve()
+      })
+    })
+  }
+
+  /**
+   * Returns the reserved port number and simultaneously releases it.
+   * The port should be bound immediately to limit race conditions.
+   *
+   * @returns {Promise<number>}
+   */
+  async take() {
+    if (this._taken) {
+      throw new Error('Reserved port has already been taken.')
+    }
+
+    await this._ready
+
+    this._taken = true
+    const { port } = this._server.address()
+
+    await new Promise((resolve, reject) => {
+      this._server.close(err => (err ? reject(err) : resolve()))
+    })
+
+    return port
+  }
 }

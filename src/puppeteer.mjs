@@ -57,6 +57,11 @@ export const puppeteerConfigForArgs = async (args) => {
     puppeteerArgs.args.push(`--component-updater=url-source=${INVALID_COMPONENT_UPDATER_URL}`)
   }
 
+  if (args.wprGoPorts !== undefined) {
+    puppeteerArgs.args.push(`--host-resolver-rules=MAP *:80 127.0.0.1:${args.wprGoPorts.http},MAP *:443 127.0.0.1:${args.wprGoPorts.https},EXCLUDE localhost`)
+    puppeteerArgs.args.push('--ignore-certificate-errors-spki-list=PhrPvGIaAMmd29hj8BCZOq096yj7uMpRNHpn5PDxI6I=,2HcXCSKKJS0lEXLQEWhpHUfGuojiU0tiT5gOF9LP6IQ=')
+  }
+
   const disabledFeatures = mergedDisableFeatures(args.disableFeatures)
   puppeteerArgs.args.push(`--disable-features=${disabledFeatures.join(',')}`)
 

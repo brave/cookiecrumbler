@@ -537,6 +537,12 @@ details pre {
           card.appendChild(p);
         }
 
+        if (report.problematicOverlay === true) {
+          const p = document.createElement('p');
+          p.textContent = '⚠️ A "problematic overlay" was detected on this page.';
+          card.appendChild(p);
+        }
+
         if (report.unsupportedBrowser === true) {
           const p = document.createElement('p');
           p.textContent = '🚫 An "unsupported browser" message was detected on this page.';

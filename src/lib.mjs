@@ -306,6 +306,7 @@ export const checkPage = async (args) => {
       }
       report.scrollBlocked = ((await inPageResult.evaluate(r => r.scrollBlocked)) === true)
       report.unsupportedBrowser = (await inPageResult.evaluate(r => r.unsupportedBrowser)) ?? null
+      report.problematicOverlay = (await inPageResult.evaluate(r => r.problematicOverlay)) ?? null
     } catch (err) {
       report.error = err.stack
     } finally {

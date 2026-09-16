@@ -175,8 +175,8 @@ importers:
         version: 11.0.5
     devDependencies:
       '@reporters/github':
-        specifier: 2.0.2
-        version: 2.0.2
+        specifier: 2.1.4
+        version: 2.1.4
       esbuild:
         specifier: 0.28.1
         version: 0.28.1
@@ -506,8 +506,8 @@ packages:
       yauzl:
         optional: true
 
-  '@reporters/github@2.0.2':
-    resolution: {integrity: sha512-j8sLwKkyCi8EE3yHOpWNYd3Ig8Irnxju3v2yntEPcukcvQTTAAz6iT4opdQ+/g22PqPbT/Mqstsb1HK8YQburw==}
+  '@reporters/github@2.1.4':
+    resolution: {integrity: sha512-2adYrPa7gpFYX4xLnFvs1w8emz2eTQ9jaYEz1lmVxHjN8Ypl42G7eK4pOC/L9ZV2m2nd7l1Zw/HcQ7S8bYV0HA==}
 
   '@sentry/conventions@0.12.0':
     resolution: {integrity: sha512-z1JQrl/1SLY+8wpzvork6vl+fpsg/oCCxM7HWWhUnI/R+OGNyoIzieQuggX3uUMY7NBtp8UWCQx6FeFazzOF9g==}
@@ -1772,6 +1772,28 @@ packages:
           targets:
             - cpu: x64
               os: win32
+        - resolution:
+            archive: tarball
+            bin:
+              node: bin/node
+            integrity: sha256-MEiwgR4VjKDYZytZyDmGF2PhREkpgNjSmzad/uRXR+Q=
+            type: binary
+            url: https://unofficial-builds.nodejs.org/download/release/v24.21.0/node-v24.21.0-linux-arm64-musl.tar.gz
+          targets:
+            - cpu: arm64
+              os: linux
+              libc: musl
+        - resolution:
+            archive: tarball
+            bin:
+              node: bin/node
+            integrity: sha256-AacT402pjntNKjGR7nyj+T3QOE0aLvI8N5shYe5uEzo=
+            type: binary
+            url: https://unofficial-builds.nodejs.org/download/release/v24.21.0/node-v24.21.0-linux-x64-musl.tar.gz
+          targets:
+            - cpu: x64
+              os: linux
+              libc: musl
     version: 24.21.0
     hasBin: true
 
@@ -2681,7 +2703,7 @@ snapshots:
     optionalDependencies:
       yauzl: 2.10.0
 
-  '@reporters/github@2.0.2':
+  '@reporters/github@2.1.4':
     dependencies:
       '@actions/core': 3.0.1
       stack-utils: 2.0.6

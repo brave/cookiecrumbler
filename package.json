@@ -44,7 +44,7 @@
   "devDependencies": {
     "@reporters/github": "2.1.4",
     "esbuild": "0.28.1",
-    "eslint": "9.39.5",
+    "eslint": "10.10.0",
     "neostandard": "0.13.0",
     "tree-walker-shadow-dom": "^1.0.0"
   },

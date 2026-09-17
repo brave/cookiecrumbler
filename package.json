@@ -46,7 +46,7 @@
     "esbuild": "0.28.1",
     "eslint": "9.39.5",
     "neostandard": "0.13.0",
-    "tree-walker-shadow-dom": "^1.0.0"
+    "tree-walker-shadow-dom": "1.0.0"
   },
   "devEngines": {
     "runtime": {

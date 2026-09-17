@@ -106,7 +106,7 @@ settings:
   excludeLinksFromLockfile: false
 
 overrides:
-  '@puppeteer/browsers': 3.2.1
+  '@puppeteer/browsers': 3.2.2
   js-yaml@>=4.0.0 <4.3.2: ^4.3.2
 
 importers:
@@ -485,8 +485,8 @@ packages:
     resolution: {integrity: sha512-eSYWTm620tTk45EKSedaUL8MFYI8hW164hIXsgIHyxu3VobUB3fFCu5t0hQby6OoWRPsG1KkKUG2M5UadiLiVg==}
     engines: {node: '>=14'}
 
-  '@puppeteer/browsers@3.2.1':
-    resolution: {integrity: sha512-KDz+3qDRdBAlRlMjmKyj6dEs33YHTk/xRHEENSXq6TNnhgoU15ruSHtEBeVF6OZ9tBDY55Se4P0nFMNsipzU9A==}
+  '@puppeteer/browsers@3.2.2':
+    resolution: {integrity: sha512-q2BU4YfO9h/Wt7IcWPcggpOOqLk2Tbs1hDwolvKZrweRjy751OJBKMN9zO5bfD0pzU7X/tvKw/exQds4pM/LOg==}
     engines: {node: '>=22.12.0'}
     hasBin: true
     peerDependencies:
@@ -2652,7 +2652,7 @@ snapshots:
 
   '@opentelemetry/semantic-conventions@1.43.0': {}
 
-  '@puppeteer/browsers@3.2.1':
+  '@puppeteer/browsers@3.2.2':
     dependencies:
       modern-tar: 0.8.5
       yargs: 18.1.0
@@ -4202,7 +4202,7 @@ snapshots:
 
   puppeteer-core@24.22.3(supports-color@7.2.0):
     dependencies:
-      '@puppeteer/browsers': 3.2.1
+      '@puppeteer/browsers': 3.2.2
       chromium-bidi: 9.1.0(devtools-protocol@0.0.1495869)
       debug: 4.4.3(supports-color@7.2.0)
       devtools-protocol: 0.0.1495869

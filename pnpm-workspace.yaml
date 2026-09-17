@@ -2,5 +2,5 @@ allowBuilds:
   esbuild: true
 minimumReleaseAge: 10080
 overrides:
-  "@puppeteer/browsers": 3.2.1
+  "@puppeteer/browsers": 3.2.2
   js-yaml@>=4.0.0 <4.3.2: ^4.3.2

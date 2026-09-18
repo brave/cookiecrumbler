@@ -138,8 +138,8 @@ importers:
         specifier: ^5.1.1
         version: 5.2.2
       openai:
-        specifier: ^6.0.0
-        version: 6.49.0(ws@8.21.3)(zod@3.25.76)
+        specifier: ^7.0.0
+        version: 7.15.0(undici@6.28.1)(ws@8.21.3)(zod@3.25.76)
       proxy-chain:
         specifier: ^2.5.3
         version: 2.7.1(supports-color@7.2.0)
@@ -1810,13 +1810,15 @@ packages:
   once@1.4.0:
     resolution: {integrity: sha512-lNaJgI+2Q5URQBkccEKHTQOPaXdUxnZZElQTZY0MFUAuaEqe1E+Nyvgdz/aIyNi6Z9MzO5dv1H8n58/GELp3+w==}
 
-  openai@6.49.0:
-    resolution: {integrity: sha512-aYCc0C6L864eR6WSYIwQGyXriw/nIyZx0ObvhzOEVuk0zoBDpynjSbrionWI7q65B5H8jJX0DXR9snEzM6bfPg==}
+  openai@7.15.0:
+    resolution: {integrity: sha512-2DIwesnPSduw68MFx7nAdgvshrgvS8WOan5W8+tgUMlAy/tY+Q41g80Pa+w/v64rHA6rtn+dketa8QvMVxU96w==}
+    engines: {node: '>=22.0.0'}
     peerDependencies:
       '@aws-sdk/credential-provider-node': '>=3.972.0 <4'
       '@smithy/hash-node': '>=4.3.0 <5'
       '@smithy/signature-v4': '>=5.4.0 <6'
-      ws: ^8.18.0
+      undici: '>=5 <9'
+      ws: ^8.21.0
       zod: ^3.25 || ^4.0
     peerDependenciesMeta:
       '@aws-sdk/credential-provider-node':
@@ -1824,6 +1826,8 @@ packages:
       '@smithy/hash-node':
         optional: true
       '@smithy/signature-v4':
+        optional: true
+      undici:
         optional: true
       ws:
         optional: true
@@ -4117,8 +4121,9 @@ snapshots:
     dependencies:
       wrappy: 1.0.2
 
-  openai@6.49.0(ws@8.21.3)(zod@3.25.76):
+  openai@7.15.0(undici@6.28.1)(ws@8.21.3)(zod@3.25.76):
     optionalDependencies:
+      undici: 6.28.1
       ws: 8.21.3
       zod: 3.25.76
 

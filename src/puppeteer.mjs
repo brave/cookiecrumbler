@@ -8,7 +8,8 @@ export const VIEWPORT_PRESETS = {
 
 const DEFAULT_DISABLED_FEATURES = [
   'BraveAdblockCookieListDefault',
-  'BraveAdblockMobileNotificationsListDefault'
+  'BraveAdblockMobileNotificationsListDefault',
+  'AdblockDATCache'
 ]
 
 export const REQUEST_DISABLE_FEATURES_ALLOWLIST = [

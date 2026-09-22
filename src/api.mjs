@@ -16,6 +16,7 @@ import { Semaphore, withTimeout } from 'async-mutex'
 
 import { checkPage } from './lib.mjs'
 import { getFilteredKnownDevices } from './setupUtil.mjs'
+import { isValidHttpUrl } from './util.mjs'
 import { VIEWPORT_PRESETS, REQUEST_DISABLE_FEATURES_ALLOWLIST } from './puppeteer.mjs'
 
 // Calculate default max concurrency based on available memory
@@ -39,7 +40,8 @@ console.log(`Browser binary: ${browserBinaryPath}`)
 console.log(`Port: ${port}`)
 
 const app = new Koa()
-app.use(bodyParser())
+// Raised json limit: WprGo replay archives are uploaded base64-encoded in the JSON body
+app.use(bodyParser({ jsonLimit: '200mb' }))
 app.use(compress())
 
 Sentry.setupKoaErrorHandler(app)
@@ -120,7 +122,8 @@ router.post('/check', async (ctx) => {
     includeMhtml,
     viewport,
     userAgent,
-    disableFeatures
+    disableFeatures,
+    wprGo
   } = ctx.request.body
 
   // Validate device name
@@ -171,6 +174,57 @@ router.post('/check', async (ctx) => {
     }
   }
 
+  // Validate WprGo options
+  if (wprGo !== undefined) {
+    if (typeof wprGo !== 'object' || wprGo === null || Array.isArray(wprGo)) {
+      ctx.status = 400
+      ctx.body = { error: 'Bad Request: wprGo must be an object' }
+      return
+    }
+
+    if (wprGo.action !== 'record' && wprGo.action !== 'replay') {
+      ctx.status = 400
+      ctx.body = { error: 'Bad Request: wprGo.action must be "record" or "replay"' }
+      return
+    }
+
+    // Server-local archive paths are rejected at the API boundary: they let API
+    // clients make wpr read arbitrary files. Upload the archive via wprGo.data
+    // instead (materialized under a randomized server-side tmp path).
+    if (wprGo.path !== undefined) {
+      ctx.status = 400
+      ctx.body = { error: 'Bad Request: wprGo.path is not supported; upload the archive via wprGo.data' }
+      return
+    }
+
+    if (wprGo.data !== undefined && (typeof wprGo.data !== 'string' || !wprGo.data)) {
+      ctx.status = 400
+      ctx.body = { error: 'Bad Request: wprGo.data must be a non-empty base64 string' }
+      return
+    }
+
+    if (wprGo.data !== undefined && wprGo.action !== 'replay') {
+      ctx.status = 400
+      ctx.body = { error: 'Bad Request: wprGo.data is only supported for replay action' }
+      return
+    }
+  }
+
+  // URL is only optional when replaying a WprGo archive (a URL is then taken
+  // from the archive itself)
+  if (!url && !(wprGo?.action === 'replay' && wprGo.data !== undefined)) {
+    ctx.status = 400
+    ctx.body = { error: 'Bad Request: url is required' }
+    return
+  }
+
+  // Only http(s) URLs are navigable by the check browser (blocks file://, etc.)
+  if (url !== undefined && url !== '' && !isValidHttpUrl(url)) {
+    ctx.status = 400
+    ctx.body = { error: 'Bad Request: url must be a valid http or https URL' }
+    return
+  }
+
   try {
     const report = await semaphore.runExclusive(async () => {
       return await checkPage({
@@ -189,7 +243,8 @@ router.post('/check', async (ctx) => {
         includeMhtml,
         viewport,
         userAgent,
-        disableFeatures
+        disableFeatures,
+        wprGo
       })
     })
 

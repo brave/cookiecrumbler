@@ -185,10 +185,10 @@ details pre {
   display: block;
 }
 
-.mhtml-link {
+.mhtml-link, .wpr-link {
   font-size: 0.5em;
 }
-.mhtml-link a {
+.mhtml-link a, .wpr-link a {
   color: #8ad;
 }
 
@@ -265,6 +265,12 @@ details pre {
             <option value="always">Always</option>
             <option value="onDetection">On Detection</option>
           </select>
+        </label>
+        <br>
+        <label><input type="checkbox" id="wpr-record" name="wpr-record">Record with WprGo (WebPageReplay)<span id="wpr-record-warning" class="warning-icon" hidden title="Enabled adblock lists can apply network filters that prevent some assets from being fetched. The recording will be missing those assets, which may affect regression tests.">!</span></label>
+        <br>
+        <label>Replay archive:
+          <input type="file" id="wpr-replay-file" name="wpr-replay-file" accept=".wprgo,application/gzip">
         </label>
         <br>
         <label>User Agent:
@@ -435,6 +441,54 @@ details pre {
       const spinner = document.getElementById('spinner');
       const reportList = document.getElementById('reportlist');
       const form = document.getElementById('controls');
+      const wprRecordCheckbox = document.getElementById('wpr-record');
+      const wprReplayFileInput = document.getElementById('wpr-replay-file');
+
+      // Record and replay are mutually exclusive; replay makes the URL optional
+      wprReplayFileInput.addEventListener('change', () => {
+        const hasFile = wprReplayFileInput.files.length > 0;
+        if (hasFile) {
+          wprRecordCheckbox.checked = false;
+        }
+        urlInput.required = !hasFile;
+        updateWprRecordWarning();
+      });
+      wprRecordCheckbox.addEventListener('change', () => {
+        if (wprRecordCheckbox.checked) {
+          wprReplayFileInput.value = '';
+          urlInput.required = true;
+        }
+        updateWprRecordWarning();
+      });
+      // Warn when recording while adblock lists are enabled: their network
+      // filters may prevent assets from being fetched, affecting the recording
+      const wprRecordWarning = document.getElementById('wpr-record-warning');
+      const updateWprRecordWarning = () => {
+        const anyListEnabled = Array.from(
+          document.querySelectorAll('#adblock-lists input[type="checkbox"]:not(#toggle-all-lists)')
+        ).some(checkbox => checkbox.checked);
+        wprRecordWarning.hidden = !(wprRecordCheckbox.checked && anyListEnabled);
+      };
+      document.getElementById('adblock-lists').addEventListener('change', updateWprRecordWarning);
+
+      /**
+       * Reads a WprGo archive file and returns the wprGo request payload,
+       * or null (after alerting) if the file fails the basic integrity check.
+       */
+      async function wprGoPayloadForReplayFile(file) {
+        const buf = new Uint8Array(await file.arrayBuffer());
+        // WprGo archives are gzipped; check the gzip magic bytes (0x1f 0x8b)
+        if (buf.length < 2 || buf[0] !== 0x1f || buf[1] !== 0x8b) {
+          alert('The selected file does not look like a WprGo archive (expected gzip).');
+          return null;
+        }
+        let binary = '';
+        const CHUNK = 0x8000;
+        for (let i = 0; i < buf.length; i += CHUNK) {
+          binary += String.fromCharCode.apply(null, buf.subarray(i, i + CHUNK));
+        }
+        return { action: 'replay', data: btoa(binary) };
+      }
 
       function createReportCard(report) {
         const card = document.createElement('div');
@@ -463,6 +517,29 @@ details pre {
           h2.appendChild(mhtmlSpan);
         }
         
+        if (report.wpr) {
+          // report.wpr is base64-encoded; decode it into a Blob for the download link
+          const binary = atob(report.wpr);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) {
+            bytes[i] = binary.charCodeAt(i);
+          }
+          const blob = new Blob([bytes], { type: 'application/octet-stream' });
+          const url = window.URL.createObjectURL(blob);
+          const date = new Date(report.timestamp);
+          const dateStr = date.toISOString().slice(0,10);
+          const timeStr = date.toTimeString().slice(0,8);
+
+          const wprLink = document.createElement('a');
+          wprLink.textContent = '[wpr]';
+          wprLink.href = url;
+          wprLink.download = `${new URL(report.url).hostname}_${dateStr}_${timeStr}.wprgo`;
+          const wprSpan = document.createElement('span');
+          wprSpan.appendChild(wprLink);
+          wprSpan.classList.add('wpr-link');
+          h2.appendChild(wprSpan);
+        }
+
         card.appendChild(h2);
 
         if (report.url !== report.originalUrl) {
@@ -651,9 +728,22 @@ details pre {
           return;
         }
 
+        // Build the WprGo payload: replay a selected archive, else record if checked
+        const wprReplayFile = wprReplayFileInput.files[0];
+        let wprGo;
+        if (wprReplayFile) {
+          wprGo = await wprGoPayloadForReplayFile(wprReplayFile);
+          if (wprGo === null) {
+            return;
+          }
+        } else if (wprRecordCheckbox.checked) {
+          wprGo = { action: 'record' };
+        }
+
         urlInput.disabled = true;
         locationSelector.disabled = true;
         executeButton.disabled = true;
+        wprReplayFileInput.disabled = true;
         for (const checkbox of document.querySelectorAll('input[type="checkbox"]')) {
           checkbox.disabled = true;
         }
@@ -687,7 +777,8 @@ details pre {
             includeMhtml: document.getElementById('mhtml-include-select')?.value || 'never',
             viewport: document.getElementById('viewport-select').value,
             userAgent: document.getElementById('user-agent-input')?.value,
-            disableFeatures
+            disableFeatures,
+            wprGo
           }),
         })
           .then(resp => resp.json())
@@ -702,6 +793,7 @@ details pre {
 
         urlInput.disabled = false;
         locationSelector.disabled = false;
+        wprReplayFileInput.disabled = false;
         for (const checkbox of document.querySelectorAll('input[type="checkbox"]')) {
           checkbox.disabled = false;
         }

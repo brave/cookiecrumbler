@@ -1,3 +1,15 @@
+# WprGo (WebPageReplay with zstd support) builder stage
+# Pinned to a commit on the "zstd" branch; bump this to invalidate the cache.
+FROM golang:1.27@sha256:3680233e3204827fbdc66088528ae6d4b3d034f51d03a99d454f6de034888244 AS wpr-builder
+
+# https://github.com/brave-experiments/webpagereplay (zstd branch)
+ARG WPR_GO_COMMIT=5e9effb70c055a4af3aa38f468c47e26339e0956
+
+RUN git clone https://github.com/brave-experiments/webpagereplay.git /webpagereplay && \
+    cd /webpagereplay && \
+    git checkout ${WPR_GO_COMMIT} && \
+    CGO_ENABLED=0 go build -o /wpr ./src/wpr.go
+
 # Base application image
 FROM ghcr.io/pnpm/pnpm:12.4.0@sha256:4fcb6db39468ecafef34f3e866730df106f7639ba4512e42885d80f868ccb257
 
@@ -40,6 +52,18 @@ ARG SETUP_CACHEBUST=0
 
 RUN pnpm run build
 RUN pnpm run setup ${BRAVE_BINARY} && chmod -R o+rX /app/profile
+
+# WprGo binary and assets (certs, deterministic.js) are installed outside /app;
+# the code prefers locally-built binaries and webpagereplay checkouts at the app
+# root when present.
+COPY --from=wpr-builder /wpr /usr/local/bin/wpr
+COPY --from=wpr-builder \
+    /webpagereplay/deterministic.js \
+    /webpagereplay/wpr_cert.pem \
+    /webpagereplay/wpr_key.pem \
+    /webpagereplay/ecdsa_cert.pem \
+    /webpagereplay/ecdsa_key.pem \
+    /usr/local/share/webpagereplay/
 
 EXPOSE 3000
 COPY --chmod=755 <<EOT /docker-entrypoint.sh

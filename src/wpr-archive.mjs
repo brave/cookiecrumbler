@@ -5,6 +5,12 @@
 // sorted headers, body) and SerializedResponse is Go's http.Response.Write
 // output (status line, Content-Length when known or Connection: close when
 // the length is unknown, sorted headers, still-content-encoded body).
+// Before serialization, the Content-Security-Policy headers of HTML 200
+// responses are seeded with a replay nonce so that wpr's replay-time script
+// injection is authorized without wpr's 'unsafe-inline' fallback (see
+// seedCspReplayNonce).
+
+import crypto from 'node:crypto'
 
 import { NetLogError, buildExchangesFromNetLog } from './netlog.mjs'
 
@@ -153,6 +159,136 @@ const serializeResponse = (exchange) => {
   return Buffer.concat([head, exchange.responseBody])
 }
 
+// CSP directive keyword tokens as wpr's transformers.go matches them:
+// case-sensitive, single-quote wrapped, whitespace separated.
+const cspDirectiveTokens = (directive) => directive.trim().split(/\s+/).filter(Boolean)
+
+const cspFirstNonce = (directive) => {
+  for (const token of cspDirectiveTokens(directive)) {
+    if (token.startsWith("'nonce-")) return token.slice("'nonce-".length).replace(/'$/, '')
+  }
+  return ''
+}
+
+const cspHasUnsafeInline = (directive) => cspDirectiveTokens(directive).includes("'unsafe-inline'")
+
+const cspHasSha = (directive) => cspDirectiveTokens(directive).some(token => /^'sha(256|384|512)-/.test(token))
+
+/**
+ * Seeds the enforced Content-Security-Policy headers of an HTML 200 exchange
+ * (exchange.responseEntries, edited in place) with a fresh nonce so that
+ * wpr's replay-time script injection cannot relax the site's policy.
+ *
+ * At replay, wpr injects deterministic.js into every archived HTML 200
+ * response and rewrites the served CSP: a script-src (fallback default-src)
+ * directive with neither a nonce nor a hash gets 'unsafe-inline' appended,
+ * which would un-block the site's own inline scripts that the live site (and
+ * this recording) blocked. When the archived headers instead carry a nonce,
+ * wpr copies the first nonce it finds onto its injected script tag and leaves
+ * the policy intact, so only the injected script gains permission and
+ * CSP-blocked site scripts stay blocked on both sides of record/replay.
+ *
+ * Seeding is permission-neutral for the site: the added nonce matches nothing
+ * the site ships, and directives that already admit wpr's tag on their own
+ * (nonce, hash, 'unsafe-inline') keep their original bytes.
+ */
+const seedCspReplayNonce = (exchange, nonce) => {
+  if (exchange.responseCode !== 200) return
+  const contentType = exchange.responseEntries.find(([name]) => name === 'Content-Type')
+  if (contentType === undefined || !contentType[1].toLowerCase().startsWith('text/html')) return
+  const cspIndexes = []
+  exchange.responseEntries.forEach(([name], index) => {
+    if (name === 'Content-Security-Policy') cspIndexes.push(index)
+  })
+  if (cspIndexes.length === 0) return
+
+  // Raw directive lists per enforced header value; untouched directives keep
+  // their original bytes.
+  const valueDirectives = cspIndexes.map(index => exchange.responseEntries[index][1].split(';'))
+
+  // wpr's getCSPDirective scans the enforced headers for the first directive
+  // whose trimmed form starts with 'script-src', falling back to
+  // 'default-src'; the first nonce found there is copied onto its injected
+  // script tag. Seeding that directive controls the tag's nonce.
+  let tagSource = null
+  for (const name of ['script-src', 'default-src']) {
+    for (const directives of valueDirectives) {
+      const index = directives.findIndex(directive => directive.trim().startsWith(name))
+      if (index !== -1) {
+        tagSource = { directives, index }
+        break
+      }
+    }
+    if (tagSource !== null) break
+  }
+  if (tagSource === null) return
+
+  // Per value, wpr's getUpdatedSingleCSPHeader rewrites the first
+  // 'script-src'-prefixed directive, else the last 'default-src'-prefixed
+  // one; rewritten sha directives get wpr's script hash appended.
+  const rewrittenIndex = valueDirectives.map(directives => {
+    let index = -1
+    for (let i = 0; i < directives.length; i++) {
+      const trimmed = directives[i].trim()
+      if (trimmed.startsWith('script-src') || trimmed.startsWith('default-src')) {
+        index = i
+        if (trimmed.startsWith('script-src')) break
+      }
+    }
+    return index
+  })
+
+  // All script-restricting directives across the enforced policies.
+  const restricted = []
+  valueDirectives.forEach((directives, valueIndex) => {
+    directives.forEach((directive, index) => {
+      const trimmed = directive.trim()
+      if (trimmed.startsWith('script-src') || trimmed.startsWith('default-src')) {
+        restricted.push({ directives, index, rewritten: index === rewrittenIndex[valueIndex] })
+      }
+    })
+  })
+
+  const tagNonce = cspFirstNonce(tagSource.directives[tagSource.index])
+  const isTagSource = entry => entry.directives === tagSource.directives && entry.index === tagSource.index
+  const nonceToken = `'nonce-${nonce}'`
+  const seed = ({ directives, index }) => {
+    const kept = cspDirectiveTokens(directives[index]).filter(token => token !== "'none'")
+    if (!kept.includes(nonceToken)) kept.splice(1, 0, nonceToken)
+    directives[index] = kept.join(' ')
+  }
+
+  // Seeding is needed when any directive would block wpr's injected script or
+  // be relaxed by wpr with 'unsafe-inline'.
+  const needsSeed = restricted.some(({ directives, index, rewritten }) => {
+    const firstNonce = cspFirstNonce(directives[index])
+    if (firstNonce !== '') return firstNonce !== tagNonce
+    if (cspHasSha(directives[index])) return !rewritten
+    if (cspHasUnsafeInline(directives[index])) return false
+    return true
+  })
+  if (!needsSeed) return
+
+  seed(tagSource)
+  for (const entry of restricted) {
+    if (isTagSource(entry)) continue
+    const directive = entry.directives[entry.index]
+    if (cspFirstNonce(directive) !== '') {
+      seed(entry) // a foreign nonce would block the seeded tag; ours coexists
+    } else if (cspHasSha(directive) && entry.rewritten) {
+      continue // wpr appends its script hash here, authorizing the tag
+    } else if (!cspHasSha(directive) && cspHasUnsafeInline(directive)) {
+      continue // already admits any inline script, including wpr's
+    } else {
+      seed(entry) // wpr would relax it with 'unsafe-inline', or it blocks the tag
+    }
+  }
+
+  valueDirectives.forEach((directives, i) => {
+    exchange.responseEntries[cspIndexes[i]][1] = directives.join(';')
+  })
+}
+
 /**
  * Builds a WprGo archive object (see Archive in webpagereplay's archive.go)
  * from reconstructed exchanges. Fields follow the struct order so the output
@@ -163,6 +299,9 @@ const serializeResponse = (exchange) => {
  * them via --ignore-certificate-errors-spki-list).
  */
 export const archiveFromExchanges = (exchanges, negotiatedProtocols, { injectedScripts = {}, deterministicTimeSeedMs = 0 } = {}) => {
+  // One nonce per archive; see seedCspReplayNonce.
+  const replayNonce = crypto.randomBytes(16).toString('base64')
+  for (const exchange of exchanges) seedCspReplayNonce(exchange, replayNonce)
   const requests = new Map() // authority -> Map(url -> [message])
   for (const exchange of exchanges) {
     const message = {

@@ -316,6 +316,136 @@ describe('netlog to WprGo archive conversion', () => {
   })
 })
 
+describe('CSP replay-nonce seeding', () => {
+  // Minimal exchange shaped like the objects buildExchangesFromNetLog returns;
+  // only the fields archiveFromExchanges reads are populated.
+  const exchange = (responseHeaders, { path = '/', status = 200, contentType = 'text/html' } = {}) => ({
+    url: `https://example.com${path}`,
+    method: 'GET',
+    path,
+    authority: 'example.com',
+    userAgent: 'UA/1.0',
+    isHttp1: true,
+    requestLine: `GET ${path} HTTP/1.1\r\n`,
+    requestHeaders: ['Host: example.com'],
+    requestEntries: [],
+    requestContentLength: null,
+    requestChunked: false,
+    requestBody: Buffer.alloc(0),
+    responseStatusLine: `HTTP/1.1 ${status} OK`,
+    responseCode: status,
+    responseEntries: [['Content-Type', contentType], ...responseHeaders],
+    responseContentLength: null,
+    responseChunked: false,
+    responseBody: Buffer.alloc(0),
+    negotiatedProtocol: null,
+    boundSessions: [],
+    boundSocketId: undefined,
+    eventIndex: 0
+  })
+
+  const build = (exchanges) => archiveFromExchanges(exchanges, new Map())
+
+  const responseHeaderLines = (message) => {
+    const lines = Buffer.from(message.SerializedResponse, 'base64').toString('latin1').split('\r\n')
+    return lines.slice(1, lines.indexOf(''))
+  }
+
+  const cspValues = (message) => responseHeaderLines(message)
+    .filter(line => line.startsWith('Content-Security-Policy: '))
+    .map(line => line.slice('Content-Security-Policy: '.length))
+
+  it('seeds a nonce into script-restricting CSP headers of HTML 200 responses', () => {
+    const archive = build([exchange([['Content-Security-Policy', "script-src 'self'"]])])
+    const [csp] = cspValues(archive.Requests['example.com']['https://example.com/'][0])
+    const match = /^script-src 'nonce-([A-Za-z0-9+/]+={0,2})' 'self'$/.exec(csp)
+    assert.notStrictEqual(match, null, csp)
+    assert.strictEqual(Buffer.from(match[1], 'base64').length, 16)
+  })
+
+  it('uses a fresh nonce per archive', () => {
+    const first = build([exchange([['Content-Security-Policy', "script-src 'self'"]])])
+    const second = build([exchange([['Content-Security-Policy', "script-src 'self'"]])])
+    const [a] = cspValues(first.Requests['example.com']['https://example.com/'][0])
+    const [b] = cspValues(second.Requests['example.com']['https://example.com/'][0])
+    assert.notStrictEqual(a, b)
+  })
+
+  it('preserves policies that already admit the injected script', () => {
+    const archive = build([
+      exchange([['Content-Security-Policy', "script-src 'self' 'unsafe-inline'"]], { path: '/a' }),
+      exchange([['Content-Security-Policy', "script-src 'nonce-abc'"]], { path: '/b' }),
+      exchange([['Content-Security-Policy', "script-src 'sha256-abc'"]], { path: '/c' }),
+      exchange([['Content-Security-Policy', "img-src 'none'"]], { path: '/d' })
+    ])
+    const requests = archive.Requests['example.com']
+    assert.deepStrictEqual(cspValues(requests['https://example.com/a'][0]), ["script-src 'self' 'unsafe-inline'"])
+    assert.deepStrictEqual(cspValues(requests['https://example.com/b'][0]), ["script-src 'nonce-abc'"])
+    assert.deepStrictEqual(cspValues(requests['https://example.com/c'][0]), ["script-src 'sha256-abc'"])
+    assert.deepStrictEqual(cspValues(requests['https://example.com/d'][0]), ["img-src 'none'"])
+  })
+
+  it('leaves non-HTML and non-200 responses untouched', () => {
+    const archive = build([
+      exchange([['Content-Security-Policy', "script-src 'self'"]], { path: '/json', contentType: 'application/json' }),
+      exchange([['Content-Security-Policy', "script-src 'self'"]], { path: '/404', status: 404 })
+    ])
+    const requests = archive.Requests['example.com']
+    assert.deepStrictEqual(cspValues(requests['https://example.com/json'][0]), ["script-src 'self'"])
+    assert.deepStrictEqual(cspValues(requests['https://example.com/404'][0]), ["script-src 'self'"])
+  })
+
+  it('drops \'none\' and seeds the same nonce into every enforced policy', () => {
+    const archive = build([exchange([
+      ['Content-Security-Policy', "script-src 'sha256-x'"],
+      ['Content-Security-Policy', "default-src 'none'"],
+      ['Content-Security-Policy-Report-Only', "script-src 'self'"]
+    ])])
+    const [first, second] = cspValues(archive.Requests['example.com']['https://example.com/'][0])
+    const firstNonce = /^script-src 'nonce-([^']+)' 'sha256-x'$/.exec(first)
+    const secondNonce = /^default-src 'nonce-([^']+)'$/.exec(second)
+    assert.notStrictEqual(firstNonce, null, first)
+    assert.notStrictEqual(secondNonce, null, second)
+    assert.strictEqual(firstNonce[1], secondNonce[1])
+  })
+
+  it('seeds policies with a foreign nonce so the injected tag satisfies all of them', () => {
+    const archive = build([exchange([
+      ['Content-Security-Policy', "script-src 'nonce-abc'"],
+      ['Content-Security-Policy', "script-src 'self'"]
+    ])])
+    const [first, second] = cspValues(archive.Requests['example.com']['https://example.com/'][0])
+    const firstMatch = /^script-src 'nonce-([^']+)' 'nonce-abc'$/.exec(first)
+    const secondMatch = /^script-src 'nonce-([^']+)' 'self'$/.exec(second)
+    assert.notStrictEqual(firstMatch, null, first)
+    assert.notStrictEqual(secondMatch, null, second)
+    // the seeded nonce must be the tag source's first nonce, so wpr tags its
+    // injected script with it and the site's own nonce permissions are kept
+    assert.strictEqual(firstMatch[1], secondMatch[1])
+    assert.notStrictEqual(firstMatch[1], 'abc')
+  })
+
+  it('seeds through the full netlog pipeline', async () => {
+    const url = 'https://example.com/csp'
+    const requestHeaders = [':method: GET', ':authority: example.com', ':scheme: https', ':path: /csp']
+    const events = [
+      event(ST.URL_REQUEST, 800, ET.REQUEST_ALIVE, { url }),
+      event(ST.URL_REQUEST, 800, ET.URL_REQUEST_START_JOB, { method: 'GET', url }),
+      event(ST.HTTP_STREAM_JOB, 801, ET.HTTP_STREAM_REQUEST_PROTO, { proto: 'h2' }),
+      event(ST.URL_REQUEST, 800, ET.HTTP_TRANSACTION_HTTP2_SEND_REQUEST_HEADERS, { headers: requestHeaders }),
+      event(ST.URL_REQUEST, 800, ET.HTTP_TRANSACTION_READ_RESPONSE_HEADERS, {
+        headers: ['HTTP/1.1 200', 'content-type: text/html', 'content-security-policy: script-src \'self\'']
+      }),
+      event(ST.URL_REQUEST, 800, ET.URL_REQUEST_JOB_FILTERED_BYTES_READ, { byte_count: 3, bytes: Buffer.from('abc').toString('base64') })
+    ]
+    const { dir, netlogPath } = await writeNetlog(events)
+    const archive = await buildArchiveFromNetLog(netlogPath)
+    const [csp] = cspValues(archive.Requests['example.com'][url][0])
+    assert.match(csp, /^script-src 'nonce-[A-Za-z0-9+/]+={0,2}' 'self'$/)
+    await fs.rm(dir, { recursive: true, force: true })
+  })
+})
+
 describe('deterministic.js placeholder rendering', () => {
   it('replaces legacy and bare placeholders like wpr does', () => {
     const script = 'var seed = {{WPR_TIME_SEED_TIMESTAMP}}; var bare = WPR_TIME_SEED_TIMESTAMP; var rand = {{WPR_CONSTANT_RANDOM_RESULT}};'

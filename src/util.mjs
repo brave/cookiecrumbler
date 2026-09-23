@@ -10,3 +10,15 @@ export function generateRandomToken () {
   const max = Number.parseInt('zzzzzzzzzz', 36)
   return Math.floor(Math.random() * (max - min) + min).toString(36)
 }
+
+/**
+ * Returns true when the given value is a string parseable as an http(s) URL.
+ * Used to guard anything the headless browser may navigate to.
+ */
+export function isValidHttpUrl (url) {
+  try {
+    return new URL(url).protocol === 'http:' || new URL(url).protocol === 'https:'
+  } catch {
+    return false
+  }
+}

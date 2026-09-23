@@ -26,6 +26,7 @@ import { templateProfilePathForArgs, parseListCatalogComponentIds, isValidChrome
 import { generateRandomToken } from './util.mjs'
 
 import { cookieNoticeClassifier, browserNoticeClassifier } from './text-classification.mjs'
+import { WprGoSession, WprGoError } from './wpr.mjs'
 
 const openai = new OpenAI({
   baseURL: process.env.OPENAI_BASE_URL || 'http://localhost:11434/v1',
@@ -72,7 +73,7 @@ const shouldBlockRequest = (request) => {
 }
 
 export const checkPage = async (args) => {
-  const url = args.url
+  let url = args.url
   const includeScreenshot = args.screenshot ?? true
   const includeMarkup = args.markup ?? true
   const slowCheck = args.slowCheck ?? false
@@ -80,6 +81,7 @@ export const checkPage = async (args) => {
   const deviceName = args.device
   const mhtmlMode = args.mhtmlMode ?? 'full'
   const includeMhtml = args.includeMhtml ?? 'never'
+  const wprGo = args.wprGo
   const userAgent = args.userAgent
 
   const report = {
@@ -116,14 +118,42 @@ export const checkPage = async (args) => {
   }
 
   let proxyUrl
+  if (wprGo && args.location) {
+    report.error = 'Specifying a proxy is currently unsupported when using WprGo'
+    return report
+  }
+  let wprSession
+  let wprGoPorts
   if (args.location) {
     proxyUrl = await proxyChain.anonymizeProxy(proxyUrlWithAuth(args.location))
     console.log(`Started local proxy server: ${proxyUrl}`)
+  } else if (wprGo !== undefined) {
+    try {
+      wprSession = new WprGoSession(wprGo)
+      const { firstUrl } = await wprSession.prepare({ url })
+      if (!url) {
+        if (firstUrl === undefined) {
+          report.error = 'No URL specified and no URLs found in the WprGo archive'
+          return report
+        }
+        url = firstUrl
+        report.originalUrl = url
+        console.log(`No URL specified, using first URL from archive: ${url}`)
+      }
+      wprGoPorts = wprSession.ports
+    } catch (error) {
+      if (wprSession !== undefined) {
+        await wprSession.cleanup()
+      }
+      report.error = error instanceof WprGoError ? error.message : `WprGo failure: ${error.message}`
+      return report
+    }
   }
   const puppeteerArgs = await puppeteerConfigForArgs({
     ...args,
     pathForProfile: workingProfile,
     proxyServer: proxyUrl,
+    wprGoPorts,
     // Prevent mid-check Brave component downloads; setup must not set this.
     invalidateComponentUpdater: true
   })
@@ -324,6 +354,19 @@ export const checkPage = async (args) => {
     }
 
     await fs.rm(workingProfile, { recursive: true })
+  }
+
+  if (wprSession !== undefined) {
+    try {
+      const archiveData = await wprSession.stop()
+      if (archiveData !== undefined) {
+        report.wpr = archiveData
+      }
+    } catch (error) {
+      report.error = error instanceof WprGoError ? error.message : `WprGo failure: ${error.message}`
+    } finally {
+      await wprSession.cleanup()
+    }
   }
 
   report.scriptSources = Array.from(report.scriptSources) // Convert Set to Array

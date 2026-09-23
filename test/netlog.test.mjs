@@ -217,6 +217,54 @@ describe('netlog to WprGo archive conversion', () => {
     await fs.rm(dir, { recursive: true, force: true })
   })
 
+  it('re-frames chunked response bodies like Go resp.Write, including empty ones', () => {
+    const chunkedExchange = (path, body) => ({
+      url: `https://example.com${path}`,
+      method: 'GET',
+      path,
+      authority: 'example.com',
+      userAgent: null,
+      isHttp1: false,
+      requestLine: null,
+      requestHeaders: [],
+      requestEntries: [],
+      requestContentLength: null,
+      requestChunked: false,
+      requestBody: Buffer.alloc(0),
+      responseStatusLine: null,
+      responseCode: 200,
+      responseEntries: [['Content-Type', 'text/plain']],
+      responseContentLength: null,
+      responseChunked: true,
+      responseBody: body,
+      negotiatedProtocol: null,
+      boundSessions: [],
+      boundSocketId: undefined,
+      eventIndex: 0
+    })
+    const archive = archiveFromExchanges([
+      chunkedExchange('/body', Buffer.from('hello')),
+      chunkedExchange('/empty', Buffer.alloc(0))
+    ], new Map())
+    const response = (url) => Buffer.from(archive.Requests['example.com'][url][0].SerializedResponse, 'base64').toString('latin1')
+    // non-empty: size-chunk + body + terminal chunk
+    assert.strictEqual(response('https://example.com/body'), [
+      'HTTP/2.0 200 OK',
+      'Transfer-Encoding: chunked',
+      'Content-Type: text/plain',
+      '',
+      '5\r\nhello\r\n0\r\n\r\n'
+    ].join('\r\n'))
+    // empty: only the terminal chunk
+    assert.strictEqual(response('https://example.com/empty'), [
+      'HTTP/2.0 200 OK',
+      'Transfer-Encoding: chunked',
+      'Content-Type: text/plain',
+      '',
+      '0\r\n\r\n'
+    ].join('\r\n'))
+  })
+
   it('splits redirect hops into one message per URL and filters browser-internal traffic', async () => {
     const firstUrl = 'http://example.com/redirect-me'
     const secondUrl = 'http://example.com/finally'

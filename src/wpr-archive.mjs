@@ -82,7 +82,7 @@ const sortedHeaderLines = (entries) => {
 // bodies get only the terminal chunk.
 const chunkedBody = (body) => {
   const chunks = body.length === 0
-    ? []
+    ? [Buffer.from('0\r\n\r\n')]
     : [Buffer.from(`${body.length.toString(16)}\r\n`), body, Buffer.from('\r\n0\r\n\r\n')]
   return Buffer.concat(chunks)
 }

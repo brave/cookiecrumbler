@@ -104,12 +104,23 @@ export const checkPage = async (args) => {
   const listCatalogPath = path.join(workingProfile, 'gkboaolpopklhgplhaaiboijnklogmbc', '999.999', 'list_catalog.json')
   toggleAdblocklists(listCatalogPath, args.adblockLists ?? {})
 
+  let proxyUrl
+  const cleanupEarlyExit = async () => {
+    if (proxyUrl !== undefined) {
+      await proxyChain.closeAnonymizedProxy(proxyUrl, true)
+      proxyUrl = undefined
+      console.log('Proxy closed')
+    }
+    await fs.rm(workingProfile, { recursive: true })
+  }
+
   // Add individual filter rules to the custom filters list
   if (args.additionalFilterRules?.length) {
     const localStatePath = path.join(workingProfile, 'Local State')
     const localState = JSON.parse(await fs.readFile(localStatePath, 'utf8'))
     if (!localState.brave || !localState.brave.ad_block) {
       report.error = 'Unexpected profile format: missing brave ad_block settings'
+      await cleanupEarlyExit()
       return report
     }
     const additionalRulesText = args.additionalFilterRules.join('\n')
@@ -117,12 +128,12 @@ export const checkPage = async (args) => {
     await fs.writeFile(localStatePath, JSON.stringify(localState))
   }
 
-  let proxyUrl
   if (wprGo?.action === 'replay' && args.location) {
     // Replay routes traffic through the wpr process, which cannot be combined
     // with a client-specified proxy; netlog recording does not use wpr and
     // works with proxies.
     report.error = 'Specifying a proxy is currently unsupported when replaying WprGo archives'
+    await cleanupEarlyExit()
     return report
   }
   let wprSession
@@ -139,8 +150,7 @@ export const checkPage = async (args) => {
       const prepared = await wprSession.prepare({ url })
       if (!url) {
         if (prepared.firstUrl === undefined) {
-          report.error = 'No URL specified and no URLs found in the WprGo archive'
-          return report
+          throw new WprGoError('No URL specified and no URLs found in the WprGo archive')
         }
         url = prepared.firstUrl
         report.originalUrl = url
@@ -154,6 +164,7 @@ export const checkPage = async (args) => {
         await wprSession.cleanup()
       }
       report.error = error instanceof WprGoError ? error.message : `WprGo failure: ${error.message}`
+      await cleanupEarlyExit()
       return report
     }
   }

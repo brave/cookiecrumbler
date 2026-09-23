@@ -21,7 +21,7 @@ const gzip = promisify(zlib.gzip)
 // The Docker image installs wpr under /usr/local; locally-built binaries and
 // webpagereplay checkouts at the app root take precedence when present.
 const appRoot = path.join(import.meta.dirname, '..')
-const wprGoBinaryPath = existsSync(path.join(appRoot, 'wpr')) ? path.join(appRoot, 'wpr') : '/usr/local/bin/wpr'
+export const wprGoBinaryPath = existsSync(path.join(appRoot, 'wpr')) ? path.join(appRoot, 'wpr') : '/usr/local/bin/wpr'
 const wprGoAssetsDir = existsSync(path.join(appRoot, 'webpagereplay')) ? path.join(appRoot, 'webpagereplay') : '/usr/local/share/webpagereplay'
 
 // Upper bound for decompressed WprGo archives, guarding against gzip bombs
@@ -162,6 +162,9 @@ export class WprGoSession {
       // wpr resolves default cert/script paths relative to its cwd; pass absolute ones instead
       `--https-cert-file=${path.join(wprGoAssetsDir, 'wpr_cert.pem')},${path.join(wprGoAssetsDir, 'ecdsa_cert.pem')}`,
       `--https-key-file=${path.join(wprGoAssetsDir, 'wpr_key.pem')},${path.join(wprGoAssetsDir, 'ecdsa_key.pem')}`,
+      // Per-request SERVING/FAILED logs are INFO/WARN; default to warn to keep
+      // failures visible without the success spam (override with WPR_LOG_LEVEL)
+      `--log-level=${process.env.WPR_LOG_LEVEL ?? 'warn'}`,
     ]
     if (this._action === 'replay') {
       extraArgs.push('--inject-archive-scripts=true')

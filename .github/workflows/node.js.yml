@@ -85,6 +85,19 @@ jobs:
 
         echo "BRAVE_BINARY=/usr/bin/${PACKAGE_NAME}" >> $GITHUB_ENV
 
+        echo "BRAVE_BINARY=/usr/bin/${PACKAGE_NAME}" >> $GITHUB_ENV
+
+    - name: Build WprGo binary for tests
+      run: |
+        curl -fsSL https://codeload.github.com/brave-experiments/webpagereplay/tar.gz/${{ env.WPR_GO_COMMIT }} | tar xz -C /tmp
+        cd /tmp/webpagereplay-${{ env.WPR_GO_COMMIT }}
+        CGO_ENABLED=0 go build -o /tmp/wpr ./src/wpr.go
+        sudo install -m 755 /tmp/wpr /usr/local/bin/wpr
+        sudo mkdir -p /usr/local/share/webpagereplay
+        sudo cp deterministic.js wpr_cert.pem wpr_key.pem ecdsa_cert.pem ecdsa_key.pem /usr/local/share/webpagereplay/
+      env:
+        WPR_GO_COMMIT: 5e9effb70c055a4af3aa38f468c47e26339e0956 # zstd branch
+
     - name: Start Bedrock Proxy
       run: |
         docker run --rm -d --name bedrock-proxy -p 11434:80 \

@@ -1,10 +1,13 @@
 import { pathToFileURL } from 'url'
 import { createHash } from 'crypto'
 import path from 'path'
+import { existsSync } from 'fs'
+import { readFile } from 'fs/promises'
 import { before, describe, it } from 'node:test'
 import { cpus } from 'os'
 
 import { checkPage, prepareProfile } from '../src/lib.mjs'
+import { wprGoBinaryPath } from '../src/wpr.mjs'
 
 // Get browser path from environment variables with fallbacks
 const browserPath = process.env.BRAVE_BINARY || '/usr/bin/brave'
@@ -32,6 +35,11 @@ async function testPage (t, testCasePath, expectedCookieNotice, expectedScrollBl
     throw new Error(`[${testCasePath}] ERROR: ${r.error}`)
   }
 
+  await testReportAssertions(t, testCasePath, r, expectedCookieNotice, expectedScrollBlocking, problematicOverlay, unsupportedBrowser)
+}
+
+// Shared report assertions for the file-based and WPR replay test flows
+async function testReportAssertions (t, label, r, expectedCookieNotice, expectedScrollBlocking, problematicOverlay, unsupportedBrowser) {
   let markupHash
   if (r.identified) {
     markupHash = createHash('sha256').update(r.markupInner).digest('base64')
@@ -46,7 +54,7 @@ async function testPage (t, testCasePath, expectedCookieNotice, expectedScrollBl
     const [expectedMarkupHash, expectedRange] = expectedCookieNotice
     await t.test('should detect notice', async (t) => {
       if (markupHash !== expectedMarkupHash && r.markup) {
-        t.diagnostic(`Markup for ${testCasePath}:`)
+        t.diagnostic(`Markup for ${label}:`)
         t.diagnostic(`raw HTML: ${r.markup}`)
         t.diagnostic(`base64 HTML: ${Buffer.from(r.markup).toString('base64')}`)
         t.diagnostic(`raw HTML (inner): ${r.markupInner}`)
@@ -166,15 +174,53 @@ const testCases = [
   ['zora.co', ['ZQGVsHwN2dm4XfAmUeYQeV2b0eJxM45CFdQtDyeVjU0=', 2], false, false, false]
 ]
 
-describe('Cookie consent tests', { concurrency: CONCURRENCY }, () => {
-  // Setup profile once before all tests
-  before(async () => {
-    await prepareProfile(args)
-  })
+// Shared by both test types (HTML and WPR); prepareProfile returns early if
+// the template profile already exists
+before(async () => {
+  await prepareProfile(args)
+})
 
+describe('Cookie consent tests', { concurrency: CONCURRENCY }, () => {
   for (const [testCasePath, expectedHash, expectedScrollBlocking, problematicOverlay, unsupportedBrowser] of testCases) {
     it(testCasePath, async (t) => {
       await testPage(t, testCasePath, expectedHash, expectedScrollBlocking, problematicOverlay, unsupportedBrowser)
+    })
+  }
+})
+
+// WPR replay test cases: [archiveName, expectedUrl, expectedHash,
+// expectedScrollBlocking, problematicOverlay, unsupportedBrowser].
+// Archives live in test/data_wpr/<archiveName>.wprgo and are replayed through
+// WprGo, so the browser loads the recorded page without internet access.
+// Expectations mirror the cookie consent tests; capture hashes from a first
+// run's diagnostics output.
+const wprTestCases = [
+  ['www.planespotters.net', 'https://www.planespotters.net/', undefined, false, false, false]
+]
+
+// The wpr binary comes from the Docker image (/usr/local/bin/wpr) or a
+// locally-built webpagereplay checkout at the repo root; tests are skipped
+// when neither is present
+const wprAvailable = existsSync(wprGoBinaryPath)
+if (!wprAvailable) {
+  console.log(`WprGo binary not found (${wprGoBinaryPath}); skipping WPR replay tests`)
+}
+
+describe('WPR replay tests', { concurrency: CONCURRENCY, skip: !wprAvailable }, () => {
+  for (const [archiveName, expectedUrl, expectedHash, expectedScrollBlocking, problematicOverlay, unsupportedBrowser] of wprTestCases) {
+    it(`wpr: ${archiveName}`, async (t) => {
+      const archiveData = (await readFile(path.join(import.meta.dirname, 'data_wpr', `${archiveName}.wprgo`))).toString('base64')
+      const r = await checkPage({ wprGo: { action: 'replay', data: archiveData }, ...args })
+
+      if (r.error) {
+        throw new Error(`[${archiveName}] ERROR: ${r.error}`)
+      }
+
+      // The browser must have navigated to the entry URL recorded in the archive
+      t.assert.strictEqual(r.url, expectedUrl,
+        `expected replay to load "${expectedUrl}" but landed on "${r.url}"`)
+
+      await testReportAssertions(t, archiveName, r, expectedHash, expectedScrollBlocking, problematicOverlay, unsupportedBrowser)
     })
   }
 })

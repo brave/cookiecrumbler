@@ -20,12 +20,14 @@ export const REQUEST_DISABLE_FEATURES_ALLOWLIST = [
 // Features force-disabled during WPR runs (record and replay) to keep the
 // browser deterministic: shared dictionary compression is per-profile client
 // state that can alter request/response encodings between record and replay
-// runs, and QUIC traffic has no recoverable request/response bytes in the
-// netlog (HTTP/3 bodies cannot be reconstructed into archives).
+// runs. QUIC is not listed here: the "EnableQuic" feature Chromium once
+// defined no longer exists (verified against current Chromium sources), so
+// --disable-features would silently do nothing; QUIC is disabled via the
+// dedicated --disable-quic switch instead (HTTP/3 bodies are unrecoverable
+// from the netlog).
 const WPR_DISABLED_FEATURES = [
   'CompressionDictionaryTransport',
-  'SharedDictionaryCache',
-  'EnableQuic'
+  'SharedDictionaryCache'
 ]
 
 /**
@@ -96,6 +98,14 @@ export const puppeteerConfigForArgs = async (args) => {
     (args.netlogPath !== undefined || args.wprGoPorts !== undefined) ? WPR_DISABLED_FEATURES : []
   )
   puppeteerArgs.args.push(`--disable-features=${disabledFeatures.join(',')}`)
+
+  // HTTP/3 (QUIC) responses carry no recoverable bytes in the netlog, so
+  // the parser would silently drop those requests from the archive. The
+  // dedicated switch is honored by the network service (the
+  // network_session_configurator turns it into enable_quic=false).
+  if (args.netlogPath !== undefined || args.wprGoPorts !== undefined) {
+    puppeteerArgs.args.push('--disable-quic')
+  }
 
   // If viewport preset is specified, set window size, and screen info
   if (args.viewport && VIEWPORT_PRESETS[args.viewport]) {

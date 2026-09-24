@@ -428,11 +428,17 @@ export const buildExchangesFromNetLog = async (netlogPath, options = {}) => {
       } else if (event.type === ET.startJob) {
         if (typeof params.url === 'string') url = params.url
         // Browser-internal traffic (updater, safebrowsing, telemetry, background
-        // services) is issued outside any page frame: either it has no frame
-        // context (empty network isolation key) or it is a browser-issued
-        // non-navigation request ("not an origin" initiator). Redirects re-log
+        // services) is issued outside any page frame: its network
+        // isolation/anonymization key has no accountable frame site (verified in
+        // real captures: empty keys log as exactly "null" in newer Chromium and
+        // "null null" in older builds, anonymized telemetry as
+        // "null [internally: ...]"), or it is a browser-issued non-navigation
+        // request ("not an origin" initiator; some of those carry a real site
+        // key, e.g. spellcheck dictionary downloads). Subresources of frames
+        // with opaque origins (sandboxed iframes) keep the real top-frame site
+        // at the start of their key and are not filtered. Redirects re-log
         // START_JOB with the same attribution, so one match filters the whole
-        // source. A missing NIK keeps the request.
+        // source. A missing key keeps the request.
         browserInternal ||= (params.network_isolation_key ?? params.network_anonymization_key ?? '').startsWith('null') ||
           (params.initiator === 'not an origin' && params.request_type !== undefined && params.request_type !== 'main frame')
       } else if (event.type === ET.redirected) {

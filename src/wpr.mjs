@@ -100,7 +100,8 @@ class PortReservation {
  * Replay runs a wpr process that serves a previously recorded archive.
  *
  * Archive files are materialized server-side under randomized names in
- * mkdtemp'ed directories; client input never determines filesystem paths.
+ * mkdtemp'ed directories, and the netlog gets a randomized name in the OS
+ * temp dir; client input never determines filesystem paths.
  */
 export class WprGoSession {
   constructor ({ action, data } = {}) {
@@ -223,8 +224,10 @@ export class WprGoSession {
   }
 
   /**
-   * Returns a randomized netlog file path in the OS temp dir. The file is not
-   * created here; the browser creates (and truncates per run) the file itself.
+   * Returns a randomized netlog file path directly in the OS temp dir. The
+   * file is not created here; the browser creates (and truncates per run) the
+   * file itself, so no directory needs preparing for it: a single
+   * browser-owned file under a UUID name that cleanup() removes by path.
    */
   _materializeNetlogPath () {
     return path.join(os.tmpdir(), `cookiecrumbler-netlog-${randomUUID()}.json`)
@@ -254,9 +257,9 @@ export class WprGoSession {
 
   /**
    * For record: converts the netlog into a base64-encoded archive, failing if
-   * the netlog hit its size limit (overwritten traffic). For replay:
-   * gracefully terminates wpr. Throws WprGoError on premature exit, shutdown
-   * failure or netlog failure.
+   * the netlog reached its size limit (earlier traffic rotated away). For
+   * replay: gracefully terminates wpr. Throws WprGoError on premature exit,
+   * shutdown failure or netlog failure.
    */
   async stop () {
     if (this._action === 'record') {
@@ -317,7 +320,15 @@ export class WprGoSession {
   async cleanup () {
     await Promise.all([
       ...this._tmpDirs.map(dir => fs.rm(dir, { recursive: true, force: true })),
-      ...(this._netlogPath !== undefined ? [fs.rm(this._netlogPath, { force: true })] : [])
+      ...(this._netlogPath !== undefined
+        ? [
+            fs.rm(this._netlogPath, { force: true }),
+            // Bounded netlog mode rotates files in a "<path>.inprogress"
+            // directory next to the final file; remove it if the browser
+            // exited without stitching it away
+            fs.rm(`${this._netlogPath}.inprogress`, { recursive: true, force: true })
+          ]
+        : [])
     ])
   }
 }

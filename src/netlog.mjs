@@ -24,6 +24,7 @@
 //   HTTP/2 DATA frames on the underlying socket.
 
 import fs from 'fs/promises'
+import { createInterface } from 'node:readline'
 
 export class NetLogError extends Error {
   constructor (message) {
@@ -76,44 +77,72 @@ const readNetLog = async (netlogPath, { maxNetlogBytes = MAX_NETLOG_BYTES } = {}
   if (stat.size >= limit) {
     throw new NetLogError(`netlog file (${stat.size} bytes) reached the ${limit} byte limit (90% of the ${maxNetlogBytes} byte browser cap); earlier traffic was dropped`)
   }
-  let content
+  let handle
   try {
-    content = await fs.readFile(netlogPath, 'utf8')
+    handle = await fs.open(netlogPath, 'r')
   } catch (error) {
     throw new NetLogError(`invalid netlog data: ${error.message}`)
   }
-
-  if (content.startsWith('{"type":')) {
-    // NDJSON: each line is {"type":..., "event"|"constants"|"polledData": ...}
+  try {
+    // Peek at the first bytes to tell the NDJSON format from the legacy
+    // single-JSON document
+    const head = Buffer.alloc(8) // '{"type":'
+    const { bytesRead } = await handle.read(head, 0, head.length, 0)
+    if (head.subarray(0, bytesRead).toString('utf8') === '{"type":') {
+      return await readNdjsonEvents(handle)
+    }
+    // Legacy format: a single JSON document, which can only be parsed whole;
+    // its size stays bounded by the stat check above
+    let content
     try {
-      let constants
-      const events = []
-      for (const line of content.split('\n')) {
-        if (line.trim() === '') continue
-        const entry = JSON.parse(line)
-        if (entry.type === 'constants') {
-          constants = entry.constants
-        } else if (entry.type === 'event' && entry.event !== undefined) {
-          events.push(entry.event)
-        }
-        // "polledData"/"end" entries carry no recorded traffic
-      }
-      return { constants, events }
+      content = await handle.readFile('utf8')
     } catch (error) {
       throw new NetLogError(`invalid netlog data: ${error.message}`)
     }
+    let netlog
+    try {
+      netlog = JSON.parse(content)
+    } catch (error) {
+      throw new NetLogError(`invalid netlog data: ${error.message}`)
+    }
+    if (netlog === null || typeof netlog !== 'object' || Array.isArray(netlog.events) !== true) {
+      throw new NetLogError('netlog is missing the events list')
+    }
+    return { constants: netlog.constants ?? {}, events: netlog.events }
+  } finally {
+    await handle.close()
   }
+}
 
-  let netlog
+/**
+ * Streams NDJSON netlog lines instead of materializing the whole file as one
+ * string: {"type":"constants",...} first, then one {"type":"event",...} per
+ * event, then {"type":"polledData",...} and {"type":"end"} (which carry no
+ * recorded traffic). The parsed events still accumulate in memory, but the
+ * raw file string and its per-line split copy never exist.
+ */
+const readNdjsonEvents = async (handle) => {
+  const stream = handle.createReadStream({ encoding: 'utf8' })
+  const lines = createInterface({ input: stream, crlfDelay: Infinity })
   try {
-    netlog = JSON.parse(content)
+    let constants
+    const events = []
+    for await (const line of lines) {
+      if (line.trim() === '') continue
+      const entry = JSON.parse(line)
+      if (entry.type === 'constants') {
+        constants = entry.constants
+      } else if (entry.type === 'event' && entry.event !== undefined) {
+        events.push(entry.event)
+      }
+    }
+    return { constants, events }
   } catch (error) {
     throw new NetLogError(`invalid netlog data: ${error.message}`)
+  } finally {
+    lines.close()
+    stream.destroy()
   }
-  if (netlog === null || typeof netlog !== 'object' || Array.isArray(netlog.events) !== true) {
-    throw new NetLogError('netlog is missing the events list')
-  }
-  return { constants: netlog.constants ?? {}, events: netlog.events }
 }
 
 const HTTP2_CONNECTION_PREFACE = Buffer.from('PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n')
@@ -163,7 +192,9 @@ const extractH2DataFrames = (bytes) => {
         payload = payload.subarray(1, payload.length - payload[0])
       }
       if (payload.length > 0) {
-        payloads.set(streamId, [...payloads.get(streamId) ?? [], Buffer.from(payload)])
+        let frames = payloads.get(streamId)
+        if (frames === undefined) payloads.set(streamId, frames = [])
+        frames.push(Buffer.from(payload))
       }
     }
     offset = payloadStart + length
@@ -522,13 +553,18 @@ const recoverH2RequestBodies = (exchanges, h2Sessions) => {
  */
 const recoverH1RequestBodies = (exchanges, socketSentChunks) => {
   const cursors = new Map() // socketId -> search offset
+  const streams = new Map() // socketId -> concatenated plaintext, built once per socket
   const tasks = exchanges
     .filter(exchange => exchange.isHttp1)
     .sort((a, b) => a.eventIndex - b.eventIndex)
   for (const exchange of tasks) {
     const socketId = exchange.boundSocketId
-    if (socketId === undefined || !socketSentChunks.has(socketId)) continue
-    const stream = Buffer.concat(socketSentChunks.get(socketId))
+    if (socketId === undefined) continue
+    let stream = streams.get(socketId)
+    if (stream === undefined && socketSentChunks.has(socketId)) {
+      streams.set(socketId, stream = Buffer.concat(socketSentChunks.get(socketId)))
+    }
+    if (stream === undefined) continue
     const cursor = cursors.get(socketId) ?? 0
     const requestLine = Buffer.from(exchange.requestLine.replace(/\r?\n$/, ''))
     const lineIndex = stream.indexOf(requestLine, cursor)

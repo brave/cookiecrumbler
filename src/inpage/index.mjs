@@ -288,21 +288,21 @@ export async function inPageRoutine (randomToken, hostOverride) {
   const problematicOverlay = findProblematicOverlay()
 
   // Scroll blocking detection
-  let scrollBlocked = false;
+  let scrollBlocked = false
   // 1. check if the reoot elements are locked
   const isDocumentLocked =
-    ['hidden', 'clip'].includes(getComputedStyle(document.documentElement).overflowY) || 
+    ['hidden', 'clip'].includes(getComputedStyle(document.documentElement).overflowY) ||
     ['hidden', 'clip'].includes(getComputedStyle(document.body).overflowY) ||
-    getComputedStyle(document.documentElement).position === 'fixed' || 
-    getComputedStyle(document.body).position === 'fixed';
-  
+    getComputedStyle(document.documentElement).position === 'fixed' ||
+    getComputedStyle(document.body).position === 'fixed'
+
   // 2. if the document is locked, check if any of the top level children are scrollable (avoid checking all elements for performance concerns)
-  if (isDocumentLocked){
-    const topLevelContainers = document.querySelectorAll('body > *, #app, #root, main');
+  if (isDocumentLocked) {
+    const topLevelContainers = document.querySelectorAll('body > *, #app, #root, main')
     scrollBlocked = !Array.from(topLevelContainers).some(element => {
       // check for auto and scroll as these are the values that create a scroll container for the element
-      return ['auto', 'scroll'].includes(getComputedStyle(element).overflowY);
-    });
+      return ['auto', 'scroll'].includes(getComputedStyle(element).overflowY)
+    })
   }
 
   // Unsupported browser notice detection

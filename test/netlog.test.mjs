@@ -314,6 +314,39 @@ describe('netlog to WprGo archive conversion', () => {
     await fs.rm(dir, { recursive: true, force: true })
   })
 
+  it('drops hops the browser failed with a net_error, keeping completed redirect hops', async () => {
+    const events = []
+    const addExchange = (sourceId, url, { status = 'HTTP/1.1 200 OK', contentLength = 10, body = 'plain-body' } = {}) => {
+      const path = new URL(url).pathname
+      events.push(
+        event(ST.URL_REQUEST, sourceId, ET.REQUEST_ALIVE, { url }),
+        event(ST.URL_REQUEST, sourceId, ET.URL_REQUEST_START_JOB, { method: 'GET', url }),
+        event(ST.HTTP_STREAM_JOB, sourceId + 1, ET.HTTP_STREAM_REQUEST_PROTO, { proto: 'http/1.1' }),
+        event(ST.HTTP_STREAM_JOB, sourceId + 1, ET.SOCKET_POOL_BOUND_TO_SOCKET, { source_dependency: { id: sourceId + 2, type: ST.SOCKET } }),
+        event(ST.URL_REQUEST, sourceId, ET.HTTP_STREAM_REQUEST_BOUND_TO_JOB, { source_dependency: { id: sourceId + 1, type: ST.HTTP_STREAM_JOB } }),
+        event(ST.URL_REQUEST, sourceId, ET.HTTP_TRANSACTION_SEND_REQUEST_HEADERS, { line: `GET ${path} HTTP/1.1\r\n`, headers: ['Host: example.com'] }),
+        event(ST.URL_REQUEST, sourceId, ET.HTTP_TRANSACTION_READ_RESPONSE_HEADERS, { headers: [status, `content-length: ${contentLength}`] }),
+        ...(body.length > 0 ? [event(ST.URL_REQUEST, sourceId, ET.URL_REQUEST_JOB_FILTERED_BYTES_READ, { byte_count: body.length, bytes: Buffer.from(body).toString('base64') })] : [])
+      )
+    }
+    addExchange(1300, 'http://example.com/good')
+    // the START_JOB end carries net_error only when the job genuinely failed
+    // (here: connection closed mid-download, ERR_CONTENT_LENGTH_MISMATCH)
+    addExchange(1310, 'http://example.com/failed')
+    events.push(event(ST.URL_REQUEST, 1310, ET.URL_REQUEST_START_JOB, { net_error: -354 }))
+    // redirect chain: hop 1 completes (302), hop 2 is aborted by the browser
+    addExchange(1320, 'http://example.com/redirect-me', { status: 'HTTP/1.1 302 Found', contentLength: null, body: '' })
+    events.push(event(ST.URL_REQUEST, 1320, ET.URL_REQUEST_REDIRECTED, { location: 'http://example.com/aborted' }))
+    addExchange(1320, 'http://example.com/aborted', { contentLength: 10, body: 'short' })
+    events.push(event(ST.URL_REQUEST, 1320, ET.URL_REQUEST_START_JOB, { net_error: -354 }))
+    const { dir, netlogPath } = await writeNetlog(events)
+    const archive = await buildArchiveFromNetLog(netlogPath)
+    assert.deepStrictEqual(Object.keys(archive.Requests['example.com']).sort(), [
+      'http://example.com/good', 'http://example.com/redirect-me'
+    ])
+    await fs.rm(dir, { recursive: true, force: true })
+  })
+
   it('splits redirect hops into one message per URL and filters browser-internal traffic', async () => {
     const firstUrl = 'http://example.com/redirect-me'
     const secondUrl = 'http://example.com/finally'

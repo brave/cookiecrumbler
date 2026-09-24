@@ -375,6 +375,15 @@ export const buildExchangesFromNetLog = async (netlogPath, options = {}) => {
     const hops = []
     source.events.forEach((event, index) => {
       const params = event.params ?? {}
+      // Failure events on the source: the URL_REQUEST_START_JOB end (and the
+      // REQUEST_ALIVE end) carry net_error only when the job genuinely failed
+      // (truncated body, reset H2 stream, ...), mirroring the browser's own
+      // explicit error; cancellations are deliberately not logged as errors
+      // (url_request.cc logs net_error "only on failure"). The in-flight hop
+      // never completed, so it is dropped like the browser did.
+      if (hop !== null && typeof params.net_error === 'number' && params.net_error !== 0) {
+        hop.failed = true
+      }
       if (event.type === ET.requestAlive) {
         url = typeof params.url === 'string' ? params.url : url
       } else if (event.type === ET.startJob) {
@@ -402,7 +411,8 @@ export const buildExchangesFromNetLog = async (netlogPath, options = {}) => {
           responseHeaders: null,
           rawChunks: [],
           filteredChunks: [],
-          boundJobId
+          boundJobId,
+          failed: false
         }
         redirectTarget = null
         hops.push(hop)
@@ -418,7 +428,7 @@ export const buildExchangesFromNetLog = async (netlogPath, options = {}) => {
     })
 
     for (const candidate of hops) {
-      if (candidate.url === null || candidate.responseHeaders === null || browserInternal) {
+      if (candidate.url === null || candidate.responseHeaders === null || candidate.failed || browserInternal) {
         continue
       }
       const request = parseRequestHeaders(candidate.requestHeaders)

@@ -33,10 +33,13 @@ export class NetLogError extends Error {
 }
 
 // Upper bound for netlog files, guarding against unbounded memory growth.
-// The browser caps the file itself via --net-log-max-size-mb (overwriting
-// older data once reached), so a file at or above the limit means traffic was
-// lost and parsing must fail. The limit (in megabytes) is overridable via the
-// MAX_NETLOG_BYTES env var; the exported constant is in bytes.
+// The browser caps the file itself via --net-log-max-size-mb: its bounded
+// observer rotates files and drops the oldest events once the cap is
+// reached, and the final stitched file lands at or below the cap. A file
+// that grew into the last stretch of the cap therefore proves that earlier
+// traffic was dropped, so parsing rejects files at or above 90% of the cap.
+// The cap (in megabytes) is overridable via the MAX_NETLOG_BYTES env var;
+// the exported constant is in bytes.
 const maxNetlogMb = parseInt(process.env.MAX_NETLOG_BYTES, 10)
 export const MAX_NETLOG_BYTES = (Number.isInteger(maxNetlogMb) && maxNetlogMb > 0 ? maxNetlogMb : 300) * 1024 * 1024
 
@@ -64,9 +67,14 @@ export const replaceConstants = (script, timeSeedMs, constantMathRandomResult) =
  * per event, then {"type":"polledData",...} and {"type":"end"}).
  */
 const readNetLog = async (netlogPath, { maxNetlogBytes = MAX_NETLOG_BYTES } = {}) => {
+  // Bounded mode writes a file at or below the browser cap (rotating away
+  // the oldest events once it is reached), so a file within the last 10% of
+  // the cap proves that earlier traffic was rotated away and parsing must
+  // fail; a truncated archive passes silently otherwise.
+  const limit = Math.floor(maxNetlogBytes * 0.9)
   const stat = await fs.stat(netlogPath)
-  if (stat.size >= maxNetlogBytes) {
-    throw new NetLogError(`netlog file (${stat.size} bytes) reached the ${maxNetlogBytes} byte limit; earlier traffic was overwritten`)
+  if (stat.size >= limit) {
+    throw new NetLogError(`netlog file (${stat.size} bytes) reached the ${limit} byte limit (90% of the ${maxNetlogBytes} byte browser cap); earlier traffic was dropped`)
   }
   let content
   try {

@@ -4,7 +4,7 @@ import fs from 'fs/promises'
 import os from 'os'
 import path from 'path'
 
-import { MAX_NETLOG_BYTES, replaceConstants } from '../src/netlog.mjs'
+import { replaceConstants } from '../src/netlog.mjs'
 import { buildArchiveFromNetLog, archiveFromExchanges } from '../src/wpr-archive.mjs'
 
 // Netlog event/source type numbers are arbitrary; the parser resolves them
@@ -434,13 +434,26 @@ describe('netlog to WprGo archive conversion', () => {
     await fs.rm(dir, { recursive: true, force: true })
   })
 
-  it('fails when the netlog reached the size limit (overwritten traffic)', async () => {
+  it('fails when the netlog reached the size limit (rotated traffic)', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cookiecrumbler-netlog-test-'))
     const netlogPath = path.join(dir, 'netlog.ndjson')
-    await fs.writeFile(netlogPath, 'x'.repeat(MAX_NETLOG_BYTES + 1))
-    await assert.rejects(buildArchiveFromNetLog(netlogPath), {
+    const maxNetlogBytes = 100
+    // Bounded mode stitches a file at or below the browser cap; the parser
+    // rejects already at 90% of the cap, so a full 100-byte cap file fails
+    await fs.writeFile(netlogPath, 'x'.repeat(100))
+    await assert.rejects(buildArchiveFromNetLog(netlogPath, { maxNetlogBytes }), {
       name: 'NetLogError',
-      message: `netlog file (${MAX_NETLOG_BYTES + 1} bytes) reached the ${MAX_NETLOG_BYTES} byte limit; earlier traffic was overwritten`
+      message: `netlog file (100 bytes) reached the 90 byte limit (90% of the ${maxNetlogBytes} byte browser cap); earlier traffic was dropped`
+    })
+    await fs.rm(dir, { recursive: true, force: true })
+  })
+
+  it('parses a netlog that stayed below the 90% rejection threshold', async () => {
+    const { dir, netlogPath } = await writeNetlog([])
+    const maxNetlogBytes = 1024 * 1024
+    await assert.rejects(buildArchiveFromNetLog(netlogPath, { maxNetlogBytes }), {
+      name: 'NetLogError',
+      message: 'netlog contains no recorded requests'
     })
     await fs.rm(dir, { recursive: true, force: true })
   })

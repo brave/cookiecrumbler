@@ -265,6 +265,55 @@ describe('netlog to WprGo archive conversion', () => {
     ].join('\r\n'))
   })
 
+  it('drops exchanges whose recovered body does not match the logged Content-Length', async () => {
+    const events = []
+    const addExchange = (sourceId, url, { method = 'GET', status = 'HTTP/1.1 200 OK', contentLength = null, body = '' } = {}) => {
+      const path = new URL(url).pathname
+      const headerList = [status, ...(contentLength === null ? [] : [`content-length: ${contentLength}`])]
+      events.push(
+        event(ST.URL_REQUEST, sourceId, ET.REQUEST_ALIVE, { url }),
+        event(ST.URL_REQUEST, sourceId, ET.URL_REQUEST_START_JOB, { method, url }),
+        event(ST.HTTP_STREAM_JOB, sourceId + 1, ET.HTTP_STREAM_REQUEST_PROTO, { proto: 'http/1.1' }),
+        event(ST.HTTP_STREAM_JOB, sourceId + 1, ET.SOCKET_POOL_BOUND_TO_SOCKET, { source_dependency: { id: sourceId + 2, type: ST.SOCKET } }),
+        event(ST.URL_REQUEST, sourceId, ET.HTTP_STREAM_REQUEST_BOUND_TO_JOB, { source_dependency: { id: sourceId + 1, type: ST.HTTP_STREAM_JOB } }),
+        event(ST.URL_REQUEST, sourceId, ET.HTTP_TRANSACTION_SEND_REQUEST_HEADERS, { line: `${method} ${path} HTTP/1.1\r\n`, headers: ['Host: example.com'] }),
+        event(ST.URL_REQUEST, sourceId, ET.HTTP_TRANSACTION_READ_RESPONSE_HEADERS, { headers: headerList }),
+        ...(body.length > 0 ? [event(ST.URL_REQUEST, sourceId, ET.URL_REQUEST_JOB_FILTERED_BYTES_READ, { byte_count: body.length, bytes: Buffer.from(body).toString('base64') })] : [])
+      )
+    }
+    addExchange(1000, 'http://example.com/good', { contentLength: 10, body: 'plain-body' })
+    // aborted transfer: headers logged a 10-byte body, only 5 bytes recovered
+    addExchange(1010, 'http://example.com/short', { contentLength: 10, body: 'short' })
+    // HEAD/304 responses carry no body even when a length is logged: kept
+    addExchange(1020, 'http://example.com/head', { method: 'HEAD', contentLength: 5, body: '' })
+    addExchange(1030, 'http://example.com/not-modified', { status: 'HTTP/1.1 304 Not Modified', contentLength: 12345, body: '' })
+    // HTTP/2 frames its body with END_STREAM, not Content-Length: Chromium
+    // accepts a clean stream with fewer DATA bytes than the header, keep it
+    const h2Url = 'https://example.com/h2-short'
+    const h2Headers = [':method: GET', ':authority: example.com', ':scheme: https', ':path: /h2-short']
+    events.push(
+      event(ST.URL_REQUEST, 1050, ET.REQUEST_ALIVE, { url: h2Url }),
+      event(ST.URL_REQUEST, 1050, ET.URL_REQUEST_START_JOB, { method: 'GET', url: h2Url }),
+      event(ST.HTTP_STREAM_JOB, 1051, ET.HTTP_STREAM_REQUEST_PROTO, { proto: 'h2' }),
+      event(ST.URL_REQUEST, 1050, ET.HTTP_STREAM_REQUEST_BOUND_TO_JOB, { source_dependency: { id: 1051, type: ST.HTTP_STREAM_JOB } }),
+      event(ST.URL_REQUEST, 1050, ET.HTTP_TRANSACTION_HTTP2_SEND_REQUEST_HEADERS, { headers: h2Headers }),
+      event(ST.URL_REQUEST, 1050, ET.HTTP_TRANSACTION_READ_RESPONSE_HEADERS, { headers: ['HTTP/1.1 200', 'content-length: 10'] }),
+      event(ST.URL_REQUEST, 1050, ET.URL_REQUEST_JOB_FILTERED_BYTES_READ, { byte_count: 5, bytes: Buffer.from('short').toString('base64') })
+    )
+    const { dir, netlogPath } = await writeNetlog(events)
+    const archive = await buildArchiveFromNetLog(netlogPath)
+    assert.deepStrictEqual(Object.keys(archive.Requests['example.com']).sort(), [
+      'http://example.com/good', 'http://example.com/head', 'http://example.com/not-modified', h2Url
+    ])
+    assert.strictEqual(Buffer.from(archive.Requests['example.com']['http://example.com/good'][0].SerializedResponse, 'base64').toString('latin1'), [
+      'HTTP/1.1 200 OK',
+      'Content-Length: 10',
+      '',
+      'plain-body'
+    ].join('\r\n'))
+    await fs.rm(dir, { recursive: true, force: true })
+  })
+
   it('splits redirect hops into one message per URL and filters browser-internal traffic', async () => {
     const firstUrl = 'http://example.com/redirect-me'
     const secondUrl = 'http://example.com/finally'

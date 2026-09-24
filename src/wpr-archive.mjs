@@ -304,6 +304,25 @@ export const archiveFromExchanges = (exchanges, negotiatedProtocols, { injectedS
   for (const exchange of exchanges) seedCspReplayNonce(exchange, replayNonce)
   const requests = new Map() // authority -> Map(url -> [message])
   for (const exchange of exchanges) {
+    // An aborted transfer recovers a body shorter than the logged
+    // Content-Length. Exchanges are dropped exactly where the browser itself
+    // fails them with an explicit error, which is a property of the transfer
+    // framing: HTTP/1.x frames the body by counting Content-Length bytes, so
+    // a connection close before that count makes the browser fail the request
+    // with ERR_CONTENT_LENGTH_MISMATCH (http_stream_parser.cc), and a
+    // truncated chunked body fails with ERR_INCOMPLETE_CHUNKED_ENCODING.
+    // Chromium's HTTP/2 stack has no such check: the response is framed by
+    // END_STREAM, so a stream ending cleanly with fewer DATA bytes than
+    // Content-Length is accepted (IsResponseBodyComplete() is just
+    // stream_closed_), and the exchange is kept as-is.
+    // Chunked and EOF-delimited HTTP/1.x bodies are delimited without a
+    // length, and HEAD/204/304 responses carry no body even when a length is
+    // logged.
+    const loggedLength = exchange.responseContentLength === null ? NaN : parseInt(exchange.responseContentLength, 10)
+    if (exchange.isHttp1 && !exchange.responseChunked && exchange.method !== 'HEAD' && exchange.responseCode !== 204 && exchange.responseCode !== 304 && !Number.isNaN(loggedLength) && loggedLength !== exchange.responseBody.length) {
+      console.warn(`Skipping ${exchange.url}: logged Content-Length ${exchange.responseContentLength} does not match the ${exchange.responseBody.length} byte recovered body`)
+      continue
+    }
     const message = {
       SerializedRequest: serializeRequest(exchange).toString('base64'),
       SerializedResponse: serializeResponse(exchange).toString('base64'),

@@ -293,8 +293,8 @@ export async function inPageRoutine (randomToken, hostOverride) {
   const isDocumentLocked =
     ['hidden', 'clip'].includes(getComputedStyle(document.documentElement).overflowY) || 
     ['hidden', 'clip'].includes(getComputedStyle(document.body).overflowY) ||
-    htmlStyle.position === 'fixed' || 
-    bodyStyle.position === 'fixed';
+    getComputedStyle(document.documentElement).position === 'fixed' || 
+    getComputedStyle(document.body).position === 'fixed';
   
   // 2. if the document is locked, check if any of the top level children are scrollable (avoid checking all elements for performance concerns)
   if (isDocumentLocked){

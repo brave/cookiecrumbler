@@ -2,7 +2,7 @@ allowBuilds:
   esbuild: true
 minimumReleaseAge: 10080
 overrides:
-  "@puppeteer/browsers": 3.2.1
+  "@puppeteer/browsers": 3.2.3
   brace-expansion@<1.1.19: ^1.1.19
   brace-expansion@<1.1.20: ^1.1.20
   brace-expansion@<1.1.21: ^1.1.21

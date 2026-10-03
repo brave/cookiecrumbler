@@ -190,7 +190,7 @@ importers:
         specifier: runtime:24.21.0
         version: runtime:24.21.0
       tree-walker-shadow-dom:
-        specifier: ^1.0.0
+        specifier: 1.0.0
         version: 1.0.0
 
 packages:

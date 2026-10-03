@@ -27,6 +27,10 @@ const wprGoAssetsDir = existsSync(path.join(appRoot, 'webpagereplay')) ? path.jo
 // Upper bound for decompressed WprGo archives, guarding against gzip bombs
 const MAX_ARCHIVE_BYTES = 100 * 1024 * 1024
 
+// wpr's "DO NOT CHANGE" ready stdout signal
+const WPR_READY_LINE_RE = /^Starting server on (https?):\/\/.*:(\d+)$/
+const WPR_READY_TIMEOUT_SECONDS = 5
+
 export class WprGoError extends Error {}
 
 /**
@@ -111,6 +115,7 @@ export class WprGoSession {
     this._archive = undefined
     this._tmpDirs = []
     this._process = undefined
+    this._ready = false
     this._ports = undefined
     this._url = undefined
   }
@@ -185,17 +190,85 @@ export class WprGoSession {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'cookiecrumbler-wprgo-cwd-'))
     this._tmpDirs.push(cwd)
 
-    this._process = spawn(wprGoBinaryPath, args, { stdio: 'inherit', cwd })
+    // stdin unused, stdout parsed for readiness signal, stderr to console
+    const stdio = ['ignore', 'pipe', 'inherit'];
+    this._process = spawn(wprGoBinaryPath, args, { stdio, cwd })
     this._process.on('error', error => {
       console.error(`WprGo failed to start: ${error.message}`)
     })
     this._process.on('exit', (code, signal) => {
       console.log(`WprGo exited (code: ${code}, signal: ${signal})`)
     })
-    // TODO delay here is hacky but we must wait for wpr to become ready
-    await setTimeout(500)
+    await this._waitForReady()
 
     return { firstUrl }
+  }
+
+  /**
+   * Waits until wpr reports both servers ready by emitting the ready stdout,
+   * rejecting if the process exits or timeout occurs first.
+   */
+  _waitForReady () {
+    const expectedPorts = new Map([
+      ['http', this._ports.http],
+      ['https', this._ports.https],
+    ])
+    const { stdout } = this._process
+
+    return new Promise((resolve, reject) => {
+      const timeoutController = new AbortController()
+      const timeout = setTimeout(
+        WPR_READY_TIMEOUT_SECONDS * 1000,
+        undefined,
+        { ref: false, signal: timeoutController.signal }
+      )
+
+      const finish = (error) => {
+        timeoutController.abort()
+        this._process.off('exit', onExit)
+        this._process.off('error', onError)
+        if (error) {
+          if (this._process.exitCode === null && this._process.signalCode === null) {
+            // don't leave the failed process running
+            this._process.kill('SIGKILL')
+          }
+          reject(new WprGoError(error))
+        } else {
+          resolve()
+        }
+      }
+
+      const onTimeout = () => finish(`WprGo did not become ready within ${WPR_READY_TIMEOUT_SECONDS} seconds`)
+      const onExit = (code, signal) => finish(`WprGo exited before becoming ready (code: ${code}, signal: ${signal ?? 'none'})`)
+      const onError = error => finish(`WprGo failed to start: ${error.message}`)
+      let buffer = ''
+      const onData = (chunk) => {
+        // Mirror wpr's stdout to keep logs visible
+        process.stdout.write(chunk)
+        buffer += chunk.toString('utf8')
+        const lines = buffer.split('\n')
+        buffer = lines.pop()
+        if (this._ready) return
+        for (const line of lines) {
+          const match = line.match(WPR_READY_LINE_RE)
+          if (!match) continue
+          const [, scheme, port] = match
+          if (expectedPorts.get(scheme) !== Number(port)) continue
+          expectedPorts.delete(scheme)
+          if (expectedPorts.size === 0) {
+            this._ready = true
+            finish()
+            return
+          }
+        }
+      }
+
+      stdout.on('data', onData)
+      this._process.once('exit', onExit)
+      this._process.once('error', onError)
+      // The timer rejects with AbortError when cancelled after readiness
+      timeout.then(onTimeout, () => {})
+    })
   }
 
   /**

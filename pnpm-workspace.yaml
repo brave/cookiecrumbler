@@ -3,4 +3,11 @@ allowBuilds:
 minimumReleaseAge: 10080
 overrides:
   "@puppeteer/browsers": 3.2.1
+  brace-expansion@<1.1.19: ^1.1.19
+  brace-expansion@<1.1.20: ^1.1.20
+  brace-expansion@<1.1.21: ^1.1.21
+  brace-expansion@>=4.0.0 <5.0.10: ^5.0.10
+  brace-expansion@>=4.0.0 <5.0.11: ^5.0.11
+  brace-expansion@>=4.0.0 <5.0.12: ^5.0.12
+  ip-address@<=10.7.0: ^10.7.1
   js-yaml@>=4.0.0 <4.3.2: ^4.3.2

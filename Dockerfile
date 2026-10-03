@@ -1,9 +1,9 @@
-# WprGo (WebPageReplay with zstd support) builder stage
-# Pinned to a commit on the "zstd" branch; bump this to invalidate the cache.
+# WprGo (WebPageReplay) builder stage
+# Pinned to a commit on the "cookiecrumbler" branch; bump this to invalidate the cache.
 FROM golang:1.27@sha256:3680233e3204827fbdc66088528ae6d4b3d034f51d03a99d454f6de034888244 AS wpr-builder
 
-# https://github.com/brave-experiments/webpagereplay (zstd branch)
-ARG WPR_GO_COMMIT=5e9effb70c055a4af3aa38f468c47e26339e0956
+# https://github.com/brave-experiments/webpagereplay (cookiecrumbler branch)
+ARG WPR_GO_COMMIT=e1c683f26a53fa7923e9987d0d35fcbe081b65c3
 
 RUN git clone https://github.com/brave-experiments/webpagereplay.git /webpagereplay && \
     cd /webpagereplay && \

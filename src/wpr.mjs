@@ -242,27 +242,32 @@ export class WprGoSession {
     const exited = once(process, 'close')
     process.kill('SIGINT')
 
+    const killTimeoutSeconds = 10
+    const exitTimeout = setTimeout(
+      killTimeoutSeconds * 1000,
+      undefined,
+      { ref: false }
+    ).then(() => {
+      throw new WprGoError(`WprGo process failed to exit within ${killTimeoutSeconds} seconds`)
+    })
+
     try {
-      const killTimeoutSeconds = 10
       await Promise.race([
         exited,
-        async (_, reject) => {
-          await setTimeout(killTimeoutSeconds * 1000)
-          reject(new Error(`WprGo process failed to exit within ${killTimeoutSeconds} seconds`))
-        },
+        exitTimeout,
       ])
-
-      if (this._action === 'record') {
-        // timeout is hacky but there isn't a reliable way to wait for WprGo to finish write-on-exit
-        await setTimeout(1000)
-        return await this._readRecordedArchive()
-      }
     } catch (error) {
       if (process.exitCode === null && process.signalCode === null) {
         process.kill('SIGKILL')
       }
       await exited
       throw new WprGoError(`WprGo failure: ${error.message}`)
+    }
+
+    if (this._action === 'record') {
+      // timeout is hacky but there isn't a reliable way to wait for WprGo to finish write-on-exit
+      await setTimeout(1000)
+      return await this._readRecordedArchive()
     }
   }
 

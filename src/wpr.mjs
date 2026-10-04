@@ -265,8 +265,6 @@ export class WprGoSession {
     }
 
     if (this._action === 'record') {
-      // timeout is hacky but there isn't a reliable way to wait for WprGo to finish write-on-exit
-      await setTimeout(1000)
       return await this._readRecordedArchive()
     }
   }

@@ -96,7 +96,7 @@ jobs:
         sudo mkdir -p /usr/local/share/webpagereplay
         sudo cp deterministic.js wpr_cert.pem wpr_key.pem ecdsa_cert.pem ecdsa_key.pem /usr/local/share/webpagereplay/
       env:
-        WPR_GO_COMMIT: 5e9effb70c055a4af3aa38f468c47e26339e0956 # zstd branch
+        WPR_GO_COMMIT: e1c683f26a53fa7923e9987d0d35fcbe081b65c3 # cookiecrumbler branch
 
     - name: Start Bedrock Proxy
       run: |

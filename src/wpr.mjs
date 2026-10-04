@@ -9,7 +9,6 @@ import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { randomUUID } from 'node:crypto'
 import { promisify } from 'node:util'
-import net from 'node:net'
 import zlib from 'node:zlib'
 import { setTimeout } from 'node:timers/promises'
 
@@ -54,47 +53,6 @@ const decodeArchiveBuffer = async (buf) => {
 }
 
 /**
- * Reserve a usable port from the OS for later use.
- */
-class PortReservation {
-  constructor () {
-    this._server = net.createServer()
-    this._taken = false
-
-    this._ready = new Promise((resolve, reject) => {
-      this._server.once('error', reject)
-      this._server.listen(0, '127.0.0.1', () => {
-        this._server.removeListener('error', reject)
-        resolve()
-      })
-    })
-  }
-
-  /**
-   * Returns the reserved port number and simultaneously releases it.
-   * The port should be bound immediately to limit race conditions.
-   *
-   * @returns {Promise<number>}
-   */
-  async take () {
-    if (this._taken) {
-      throw new Error('Reserved port has already been taken.')
-    }
-
-    await this._ready
-
-    this._taken = true
-    const { port } = this._server.address()
-
-    await new Promise((resolve, reject) => {
-      this._server.close(err => (err ? reject(err) : resolve()))
-    })
-
-    return port
-  }
-}
-
-/**
  * Manages the lifecycle of a single wpr process (record or replay).
  *
  * Archive files are materialized server-side under randomized names in
@@ -125,12 +83,15 @@ export class WprGoSession {
   }
 
   get ports () {
+    if (!this._ready) {
+      throw new WprGoError('WprGo not yet ready')
+    }
     return this._ports
   }
 
   /**
-   * Validates archive data, materializes the archive file, reserves ports and
-   * spawns wpr. Returns { firstUrl }: the first http(s) URL found in the
+   * Validates archive data, materializes the archive file and spawns wpr with
+   * ephemeral ports. Returns { firstUrl }: the first http(s) URL found in the
    * archive (for replay), or undefined (for record).
    */
   async prepare ({ url } = {}) {
@@ -158,11 +119,6 @@ export class WprGoSession {
       firstUrl = this._extractFirstUrl(archive)
     }
 
-    const httpPortRes = new PortReservation()
-    const httpsPortRes = new PortReservation()
-    const [http, https] = await Promise.all([httpPortRes.take(), httpsPortRes.take()])
-    this._ports = { http, https }
-
     const extraArgs = [
       // wpr resolves default cert/script paths relative to its cwd; pass absolute ones instead
       `--https-cert-file=${path.join(wprGoAssetsDir, 'wpr_cert.pem')},${path.join(wprGoAssetsDir, 'ecdsa_cert.pem')}`,
@@ -183,7 +139,8 @@ export class WprGoSession {
       extraArgs.push(`--inject-scripts=${path.join(wprGoAssetsDir, 'deterministic.js')}`)
     }
 
-    const args = [this._action, ...extraArgs, `--http-port=${this._ports.http}`, `--https-port=${this._ports.https}`, this._archivePath]
+    // port 0 means request any free port from kernel
+    const args = [this._action, ...extraArgs, '--http-port=0', '--https-port=0', this._archivePath]
     console.log(`Spawning WprGo: ${wprGoBinaryPath} ${args.map(arg => JSON.stringify(arg)).join(' ')}`)
 
     // Give wpr a writable scratch cwd in case it dumps files there
@@ -191,7 +148,7 @@ export class WprGoSession {
     this._tmpDirs.push(cwd)
 
     // stdin unused, stdout parsed for readiness signal, stderr to console
-    const stdio = ['ignore', 'pipe', 'inherit'];
+    const stdio = ['ignore', 'pipe', 'inherit']
     this._process = spawn(wprGoBinaryPath, args, { stdio, cwd })
     this._process.on('error', error => {
       console.error(`WprGo failed to start: ${error.message}`)
@@ -205,14 +162,11 @@ export class WprGoSession {
   }
 
   /**
-   * Waits until wpr reports both servers ready by emitting the ready stdout,
-   * rejecting if the process exits or timeout occurs first.
+   * Waits until wpr reports both servers ready by emitting the ready stdout
+   * with kernel-assigned port numbers.
+   * Rejects if the process exits or timeout occurs first.
    */
   _waitForReady () {
-    const expectedPorts = new Map([
-      ['http', this._ports.http],
-      ['https', this._ports.https],
-    ])
     const { stdout } = this._process
 
     return new Promise((resolve, reject) => {
@@ -242,6 +196,7 @@ export class WprGoSession {
       const onExit = (code, signal) => finish(`WprGo exited before becoming ready (code: ${code}, signal: ${signal ?? 'none'})`)
       const onError = error => finish(`WprGo failed to start: ${error.message}`)
       let buffer = ''
+      const ports = {}
       const onData = (chunk) => {
         // Mirror wpr's stdout to keep logs visible
         process.stdout.write(chunk)
@@ -253,13 +208,12 @@ export class WprGoSession {
           const match = line.match(WPR_READY_LINE_RE)
           if (!match) continue
           const [, scheme, port] = match
-          if (expectedPorts.get(scheme) !== Number(port)) continue
-          expectedPorts.delete(scheme)
-          if (expectedPorts.size === 0) {
-            this._ready = true
-            finish()
-            return
-          }
+          ports[scheme] = Number(port)
+          if (ports.http === undefined || ports.https === undefined) continue
+          this._ports = ports
+          this._ready = true
+          finish()
+          return
         }
       }
 

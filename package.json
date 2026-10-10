@@ -19,7 +19,7 @@
     "watch": "pnpm run build --watch"
   },
   "main": "src/lib.mjs",
-  "packageManager": "pnpm@12.3.4+sha256.08a3d2d539b377a6b7ea2469b612672255ca71c30a62698530582cb9d35c268f",
+  "packageManager": "pnpm@12.9.0+sha512.8f64efa0b792986ca98ae568791bcd7722807e274c4f0c1d9853c62116495c584119db98762a2a5343b1684d361b9ae26fdd16d551666d7635346d3fae830ddd",
   "dependencies": {
     "@gorhill/publicsuffixlist": "^3.0.1",
     "@koa/bodyparser": "^6.0.0",

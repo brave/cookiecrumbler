@@ -218,7 +218,7 @@ export const checkPage = async (args) => {
       return page.goto(url, { waitUntil: 'domcontentloaded' })
     })
 
-    const waitTimeMs = args.seconds * 1000
+    let waitTimeMs = args.seconds * 1000
 
     if (slowCheck) {
       console.log('Performing slow check, waiting for network to settle.')
@@ -228,10 +228,16 @@ export const checkPage = async (args) => {
       } catch (error) {
         console.warn('Navigation timed out or failed:', error.message)
       }
-      await setTimeout(waitTimeMs) // wait longer for slow check
+      waitTimeMs *= 2 // wait longer for slow check
     }
 
-    await setTimeout(waitTimeMs)
+    const cdpSession = await page.target().createCDPSession()
+
+    await cdpSession.send('Emulation.setVirtualTimePolicy', {
+      policy: 'advance',
+      budget: waitTimeMs,
+      maxVirtualTimeTaskStarvationCount: 1000,
+    })
 
     const randomToken = generateRandomToken()
     await page.exposeFunction(randomToken, (name, ...args) => inPageAPI[name](...args))
@@ -275,11 +281,10 @@ export const checkPage = async (args) => {
 
       // Capture MHTML if requested
       if (includeMhtml === 'always' || (includeMhtml === 'onDetection' && cookieNoticeDetected)) {
-        const session = await page.target().createCDPSession()
         try {
           // Limited to 256MB
           // https://source.chromium.org/chromium/chromium/src/+/main:content/browser/devtools/devtools_http_handler.cc;l=97?q=kSendBufferSizeForDevTools&ss=chromium
-          const mhtmlData = await session.send('Page.captureSnapshot', { format: 'mhtml' })
+          const mhtmlData = await cdpSession.send('Page.captureSnapshot', { format: 'mhtml' })
 
           if (mhtmlMode === 'optimized') {
             // TODO: Implement optimization logic here
@@ -288,7 +293,7 @@ export const checkPage = async (args) => {
 
           report.mhtml = mhtmlData.data
         } finally {
-          await session.detach()
+          await cdpSession.detach()
         }
       }
 

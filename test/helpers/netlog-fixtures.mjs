@@ -103,3 +103,33 @@ export const writeRawNetlog = async (t, content, name = 'netlog.json') => {
   await fs.writeFile(netlogPath, content)
   return netlogPath
 }
+
+// Minimal exchange shaped like the objects buildExchangesFromNetLog returns;
+// only the fields archiveFromExchanges reads are populated.
+export const makeExchange = (overrides = {}) => ({
+  url: 'https://example.com/',
+  method: 'GET',
+  path: '/',
+  authority: 'example.com',
+  userAgent: 'UA/1.0',
+  isHttp1: true,
+  requestLine: 'GET / HTTP/1.1',
+  requestHeaders: ['Host: example.com'],
+  requestEntries: [],
+  requestContentLength: null,
+  requestBody: Buffer.alloc(0),
+  responseStatusLine: 'HTTP/1.1 200 OK',
+  responseCode: 200,
+  responseEntries: [['Content-Type', 'text/html']],
+  responseContentLength: null,
+  responseChunked: false,
+  responseBody: Buffer.alloc(0),
+  negotiatedProtocol: null,
+  boundSessions: [],
+  boundSocketId: null,
+  eventIndex: 0,
+  ...overrides
+})
+
+export const decodeRequest = (message) => Buffer.from(message.SerializedRequest, 'base64').toString('latin1')
+export const decodeResponse = (message) => Buffer.from(message.SerializedResponse, 'base64').toString('latin1')

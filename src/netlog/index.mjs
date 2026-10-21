@@ -39,7 +39,8 @@ export { NetLogError } from './errors.mjs'
  *
  * @param {string} netlogPath path of the netlog JSON file
  * @returns {Promise<{exchanges: object[], negotiatedProtocols: Map<string, string>}>}
- *   exchanges are chronological objects:
+ *   exchanges are chronological objects (ordered by the netlog position of
+ *   their request-headers event):
  *   { url, method, path, authority, userAgent, isHttp1, requestLine,
  *     requestEntries, requestContentLength, requestBody,
  *     responseStatusLine, responseCode, responseEntries, responseContentLength,
@@ -76,14 +77,18 @@ export const buildExchangesFromNetLog = async (netlogPath, options = {}) => {
   }
 
   // Events grouped by source, preserving chronological order. Source ids are
-  // partitioned per source type, so maps are keyed by type:id pairs.
-  const sources = new Map() // sourceKey -> { key, type, events }
-  for (const event of netlog.events) {
+  // partitioned per source type, so maps are keyed by type:id pairs. Each
+  // event's position in netlog.events is recorded alongside it: a per-source
+  // position says nothing about when other sources logged, while the netlog
+  // position is the only cross-source time order the file provides.
+  const sources = new Map() // sourceKey -> { key, type, events, eventIndices }
+  for (const [eventIndex, event] of netlog.events.entries()) {
     const key = sourceKeyOf(event.source)
     if (key === null) continue
     let source = sources.get(key)
-    if (source === undefined) sources.set(key, source = { key, type: event.source.type, events: [] })
+    if (source === undefined) sources.set(key, source = { key, type: event.source.type, events: [], eventIndices: [] })
     source.events.push(event)
+    source.eventIndices.push(eventIndex)
   }
   // TLS payload plaintext written per socket. SSL_SOCKET_BYTES_* events carry
   // the decrypted bytes; SOCKET_BYTES_* carry the ciphertext for TLS sockets.
@@ -194,7 +199,7 @@ export const buildExchangesFromNetLog = async (netlogPath, options = {}) => {
         boundJobId = depKey(params)
       } else if (event.type === ET.sendHeaders || event.type === ET.http2SendHeaders) {
         hop = {
-          eventIndex: index,
+          eventIndex: source.eventIndices[index],
           url: redirectTarget ?? url,
           isHttp1: event.type === ET.sendHeaders,
           // Stripped once here; the request-line regex, body recovery and the
@@ -280,6 +285,12 @@ export const buildExchangesFromNetLog = async (netlogPath, options = {}) => {
     }
   }
 
+  // Sources are iterated in first-seen order, so the exchanges collected
+  // above are grouped per source rather than in time order; sorting by the
+  // send-headers event position restores the chronological order the
+  // docstring promises and the keep-alive body recovery below relies on
+  exchanges.sort((a, b) => a.eventIndex - b.eventIndex)
+
   // Recover request bodies from the bound connections
   recoverH2RequestBodies(exchanges, h2Sessions)
   recoverH1RequestBodies(exchanges, socketSentChunks)
@@ -290,8 +301,8 @@ export const buildExchangesFromNetLog = async (netlogPath, options = {}) => {
  * HTTP/2 request body recovery: each URL_REQUEST's header block is matched
  * against the bound HTTP/2 session's SEND_HEADERS events (the logged header
  * lists are identical), yielding the stream id whose DATA frames carry the
- * body. Tasks are processed in chronological order so that identical requests
- * consume stream ids in order.
+ * body. Tasks are processed in netlog order so that identical requests
+ * consume stream ids in the order the requests were sent.
  */
 const recoverH2RequestBodies = (exchanges, h2Sessions) => {
   const tasks = exchanges
@@ -316,7 +327,7 @@ const recoverH2RequestBodies = (exchanges, h2Sessions) => {
  * HTTP/1.1 request body recovery: finds the request line in the plaintext
  * bytes written on the bound socket and slices out the body after the header
  * block. Keep-alive sockets are scanned with a monotonic cursor so that
- * repeated requests are attributed in chronological order.
+ * repeated requests are attributed in the order they were sent.
  */
 const recoverH1RequestBodies = (exchanges, socketSentChunks) => {
   const cursors = new Map() // socketId -> search offset

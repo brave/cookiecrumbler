@@ -88,6 +88,55 @@ describe('buildExchangesFromNetLog', () => {
     assert.strictEqual(exchanges[0].method, 'POST')
   })
 
+  it('recovered h2 bodies follow send order when two requests log identical header lists', async (t) => {
+    // Two beacons with byte-identical header lists on one session: matching
+    // them against the session's SEND_HEADERS blocks only works when the
+    // requests are processed in the order they were sent, which is the netlog
+    // position of the send-headers event, not the position within their own
+    // source. Request A's source logs two cache events before sending, so its
+    // per-source index is the larger one although it sent first.
+    const requestHeaders = [
+      ':method: POST',
+      ':authority: example.com',
+      ':scheme: https',
+      ':path: /collect',
+      'content-type: text/plain'
+    ]
+    const events = [
+      event(ST.URL_REQUEST, 900, ET.REQUEST_ALIVE, { url: 'https://example.com/collect' }),
+      event(ST.URL_REQUEST, 900, ET.URL_REQUEST_START_JOB, { method: 'POST', url: 'https://example.com/collect' }),
+      event(ST.URL_REQUEST, 900, ET.HTTP_CACHE_READ_DATA, {}),
+      event(ST.URL_REQUEST, 900, ET.HTTP_CACHE_READ_DATA, {}),
+      event(ST.HTTP_STREAM_JOB, 901, ET.HTTP_STREAM_REQUEST_PROTO, { proto: 'h2' }),
+      event(ST.HTTP_STREAM_JOB, 901, ET.SOCKET_POOL_BOUND_TO_SOCKET, { source_dependency: { id: 902, type: ST.SOCKET } }),
+      event(ST.HTTP_STREAM_JOB, 901, ET.HTTP2_SESSION_POOL_IMPORTED_SESSION_FROM_SOCKET, { source_dependency: { id: 903, type: ST.HTTP2_SESSION } }),
+      event(ST.URL_REQUEST, 900, ET.HTTP_STREAM_REQUEST_BOUND_TO_JOB, { source_dependency: { id: 901, type: ST.HTTP_STREAM_JOB } }),
+      event(ST.URL_REQUEST, 900, ET.HTTP_TRANSACTION_HTTP2_SEND_REQUEST_HEADERS, { headers: requestHeaders }),
+      event(ST.URL_REQUEST, 900, ET.HTTP_TRANSACTION_READ_RESPONSE_HEADERS, { headers: ['HTTP/1.1 204'] }),
+      event(ST.URL_REQUEST, 910, ET.REQUEST_ALIVE, { url: 'https://example.com/collect' }),
+      event(ST.URL_REQUEST, 910, ET.URL_REQUEST_START_JOB, { method: 'POST', url: 'https://example.com/collect' }),
+      event(ST.HTTP_STREAM_JOB, 911, ET.HTTP_STREAM_REQUEST_PROTO, { proto: 'h2' }),
+      event(ST.HTTP_STREAM_JOB, 911, ET.SOCKET_POOL_BOUND_TO_SOCKET, { source_dependency: { id: 902, type: ST.SOCKET } }),
+      event(ST.HTTP_STREAM_JOB, 911, ET.HTTP2_SESSION_POOL_IMPORTED_SESSION_FROM_SOCKET, { source_dependency: { id: 903, type: ST.HTTP2_SESSION } }),
+      event(ST.URL_REQUEST, 910, ET.HTTP_STREAM_REQUEST_BOUND_TO_JOB, { source_dependency: { id: 911, type: ST.HTTP_STREAM_JOB } }),
+      event(ST.URL_REQUEST, 910, ET.HTTP_TRANSACTION_HTTP2_SEND_REQUEST_HEADERS, { headers: requestHeaders }),
+      event(ST.URL_REQUEST, 910, ET.HTTP_TRANSACTION_READ_RESPONSE_HEADERS, { headers: ['HTTP/1.1 204'] }),
+      event(ST.SOCKET, 902, ET.SSL_SOCKET_BYTES_SENT, {
+        byte_count: 100,
+        bytes: Buffer.concat([
+          h2SentBytes(3, Buffer.from('first-body')),
+          h2SentBytes(5, Buffer.from('second-body'), { preface: false })
+        ]).toString('base64')
+      }),
+      event(ST.HTTP2_SESSION, 903, ET.HTTP2_SESSION_INITIALIZED, { protocol: 'h2', source_dependency: { id: 902, type: ST.SOCKET } }),
+      event(ST.HTTP2_SESSION, 903, ET.HTTP2_SESSION_SEND_HEADERS, { headers: requestHeaders, stream_id: 3 }),
+      event(ST.HTTP2_SESSION, 903, ET.HTTP2_SESSION_SEND_HEADERS, { headers: requestHeaders, stream_id: 5 })
+    ]
+    const { exchanges } = await buildExchangesFromNetLog(await writeNetlog(t, events))
+    assert.strictEqual(exchanges.length, 2)
+    assert.deepStrictEqual(exchanges.map(e => e.requestBody.toString()), ['first-body', 'second-body'])
+  })
+
   it('reconstructs an h1 exchange and recovers its request body from the socket bytes', async (t) => {
     const url = 'http://example.com/a'
     const events = [
@@ -123,6 +172,50 @@ describe('buildExchangesFromNetLog', () => {
     assert.strictEqual(exchange.responseContentLength, 10)
     assert.strictEqual(exchange.responseBody.toString(), 'plain-body')
     assert.deepStrictEqual([...negotiatedProtocols], [['example.com', 'http/1.1']])
+  })
+
+  it('attributes keep-alive h1 bodies in wire order when a redirect hop logs more events', async (t) => {
+    // The POST /api exchange is the second hop of a redirect: its send-headers
+    // event sits late within its own URL_REQUEST source, while the
+    // independent POST /api below it only logs three events before sending.
+    // Ordering the body recovery by that per-source index sends B to the
+    // front, and on this keep-alive socket B then matches A's request line
+    // first: with identical request lines the two bodies swap.
+    const postHeaders = ['Host: example.com', 'content-length: 5']
+    const events = [
+      event(ST.URL_REQUEST, 800, ET.REQUEST_ALIVE, { url: 'http://example.com/redirect-me' }),
+      event(ST.URL_REQUEST, 800, ET.URL_REQUEST_START_JOB, { method: 'GET', url: 'http://example.com/redirect-me' }),
+      event(ST.HTTP_STREAM_JOB, 801, ET.HTTP_STREAM_REQUEST_PROTO, { proto: 'http/1.1' }),
+      event(ST.HTTP_STREAM_JOB, 801, ET.SOCKET_POOL_BOUND_TO_SOCKET, { source_dependency: { id: 802, type: ST.SOCKET } }),
+      event(ST.URL_REQUEST, 800, ET.HTTP_STREAM_REQUEST_BOUND_TO_JOB, { source_dependency: { id: 801, type: ST.HTTP_STREAM_JOB } }),
+      event(ST.URL_REQUEST, 800, ET.HTTP_TRANSACTION_SEND_REQUEST_HEADERS, { line: 'GET /redirect-me HTTP/1.1\r\n', headers: ['Host: example.com'] }),
+      event(ST.URL_REQUEST, 800, ET.HTTP_TRANSACTION_READ_RESPONSE_HEADERS, { headers: ['HTTP/1.1 302 Found'] }),
+      event(ST.URL_REQUEST, 800, ET.URL_REQUEST_REDIRECTED, { location: 'http://example.com/api' }),
+      event(ST.URL_REQUEST, 810, ET.REQUEST_ALIVE, { url: 'http://example.com/api' }),
+      event(ST.URL_REQUEST, 810, ET.URL_REQUEST_START_JOB, { method: 'POST', url: 'http://example.com/api' }),
+      event(ST.HTTP_STREAM_JOB, 811, ET.HTTP_STREAM_REQUEST_PROTO, { proto: 'http/1.1' }),
+      event(ST.HTTP_STREAM_JOB, 811, ET.SOCKET_POOL_BOUND_TO_SOCKET, { source_dependency: { id: 802, type: ST.SOCKET } }),
+      event(ST.URL_REQUEST, 800, ET.HTTP_TRANSACTION_SEND_REQUEST_HEADERS, { line: 'POST /api HTTP/1.1\r\n', headers: postHeaders }),
+      event(ST.URL_REQUEST, 810, ET.HTTP_STREAM_REQUEST_BOUND_TO_JOB, { source_dependency: { id: 811, type: ST.HTTP_STREAM_JOB } }),
+      event(ST.URL_REQUEST, 810, ET.HTTP_TRANSACTION_SEND_REQUEST_HEADERS, { line: 'POST /api HTTP/1.1\r\n', headers: postHeaders }),
+      event(ST.URL_REQUEST, 800, ET.HTTP_TRANSACTION_READ_RESPONSE_HEADERS, { headers: ['HTTP/1.1 200 OK'] }),
+      event(ST.URL_REQUEST, 810, ET.HTTP_TRANSACTION_READ_RESPONSE_HEADERS, { headers: ['HTTP/1.1 200 OK'] }),
+      // keep-alive socket: the redirect's GET, then the two identical POSTs
+      event(ST.SOCKET, 802, ET.SOCKET_BYTES_SENT, {
+        byte_count: 180,
+        bytes: Buffer.from(
+          'GET /redirect-me HTTP/1.1\r\nHost: example.com\r\n\r\n' +
+          'POST /api HTTP/1.1\r\nHost: example.com\r\ncontent-length: 5\r\n\r\nAAAAA' +
+          'POST /api HTTP/1.1\r\nHost: example.com\r\ncontent-length: 5\r\n\r\nBBBBB'
+        ).toString('base64')
+      })
+    ]
+    const { exchanges } = await buildExchangesFromNetLog(await writeNetlog(t, events))
+    assert.strictEqual(exchanges.length, 3)
+    assert.deepStrictEqual(exchanges.map(e => e.requestLine), [
+      'GET /redirect-me HTTP/1.1', 'POST /api HTTP/1.1', 'POST /api HTTP/1.1'
+    ])
+    assert.deepStrictEqual(exchanges.map(e => e.requestBody.toString()), ['', 'AAAAA', 'BBBBB'])
   })
 
   it('splits redirect hops into one exchange per URL', async (t) => {
@@ -171,6 +264,24 @@ describe('buildExchangesFromNetLog', () => {
     assert.deepStrictEqual(exchanges.map(e => e.url), [
       'http://example.com/good', 'http://example.com/redirect-me'
     ])
+  })
+
+  it('orders exchanges chronologically, not by first-seen source', async (t) => {
+    // Request B's source is created before request A's, but A's headers hit
+    // the wire first (B was still resolving): the returned order follows the
+    // send-headers events, not the order the sources first appear in
+    const events = [
+      event(ST.URL_REQUEST, 950, ET.REQUEST_ALIVE, { url: 'http://example.com/b' }),
+      event(ST.URL_REQUEST, 950, ET.URL_REQUEST_START_JOB, { method: 'GET', url: 'http://example.com/b' }),
+      event(ST.URL_REQUEST, 940, ET.REQUEST_ALIVE, { url: 'http://example.com/a' }),
+      event(ST.URL_REQUEST, 940, ET.URL_REQUEST_START_JOB, { method: 'GET', url: 'http://example.com/a' }),
+      event(ST.URL_REQUEST, 940, ET.HTTP_TRANSACTION_SEND_REQUEST_HEADERS, { line: 'GET /a HTTP/1.1\r\n', headers: ['Host: example.com'] }),
+      event(ST.URL_REQUEST, 940, ET.HTTP_TRANSACTION_READ_RESPONSE_HEADERS, { headers: ['HTTP/1.1 200 OK'] }),
+      event(ST.URL_REQUEST, 950, ET.HTTP_TRANSACTION_SEND_REQUEST_HEADERS, { line: 'GET /b HTTP/1.1\r\n', headers: ['Host: example.com'] }),
+      event(ST.URL_REQUEST, 950, ET.HTTP_TRANSACTION_READ_RESPONSE_HEADERS, { headers: ['HTTP/1.1 200 OK'] })
+    ]
+    const { exchanges } = await buildExchangesFromNetLog(await writeNetlog(t, events))
+    assert.deepStrictEqual(exchanges.map(e => e.path), ['/a', '/b'])
   })
 
   it('filters browser-internal traffic via the network isolation key', async (t) => {

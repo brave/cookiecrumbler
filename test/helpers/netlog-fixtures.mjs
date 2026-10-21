@@ -22,7 +22,11 @@ export const ET = {
   HTTP2_SESSION_SEND_HEADERS: 13,
   HTTP2_SESSION_POOL_IMPORTED_SESSION_FROM_SOCKET: 14,
   SOCKET_BYTES_SENT: 15,
-  SSL_SOCKET_BYTES_SENT: 16
+  SSL_SOCKET_BYTES_SENT: 16,
+  // Cache bookkeeping logged on URL_REQUEST sources before the transaction
+  // sends its headers; the parser does not model it, but real captures are
+  // full of events like this one, so tests use it to shift event positions
+  HTTP_CACHE_READ_DATA: 17
 }
 export const ST = {
   URL_REQUEST: 1,
@@ -45,19 +49,17 @@ export const event = (sourceType, sourceId, type, params = {}) => ({
 
 // HTTP/2 request bytes written as TLS payload plaintext: connection preface
 // plus a HEADERS frame (HPACK bytes; the parser skips non-DATA frames) and a
-// DATA frame carrying the request body.
-export const h2SentBytes = (streamId, requestBody) => {
+// DATA frame carrying the request body. Set preface to false to get bare
+// frames for extending a connection with further requests.
+export const h2SentBytes = (streamId, requestBody, { preface = true } = {}) => {
   const headersFrame = Buffer.concat([
     Buffer.from([0, 0, 5]), Buffer.from([0x1, 0x4]), Buffer.from([0, 0, 0, streamId]), Buffer.alloc(5)
   ])
   const dataFrame = Buffer.concat([
     Buffer.from([0, 0, requestBody.length]), Buffer.from([0x0, 0x0]), Buffer.from([0, 0, 0, streamId]), requestBody
   ])
-  return Buffer.concat([
-    Buffer.from('PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n'),
-    headersFrame,
-    dataFrame
-  ])
+  const frames = Buffer.concat([headersFrame, dataFrame])
+  return preface ? Buffer.concat([Buffer.from('PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n'), frames]) : frames
 }
 
 export const writeNetlog = async (t, events, { format = 'json' } = {}) => {

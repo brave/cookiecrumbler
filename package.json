@@ -16,7 +16,8 @@
     "lint": "eslint",
     "lint-fix": "eslint --fix",
     "build": "esbuild --bundle --format=cjs --sourcemap --outdir=bundles src/inpage/index.mjs",
-    "watch": "pnpm run build --watch"
+    "watch": "pnpm run build --watch",
+    "typecheck": "tsc -p tsconfig.json"
   },
   "main": "src/lib.mjs",
   "packageManager": "pnpm@12.14.0+sha512.c18ba6d87993d3d164cb5e8948f32b2c06ee854487e06cd8d86781342fb3e5bb4634367034711e86802baa9c37bea906ce1929ad08d70884c97d801df13389a6",
@@ -44,10 +45,12 @@
   },
   "devDependencies": {
     "@reporters/github": "2.1.4",
+    "@types/node": "26.5.0",
     "esbuild": "0.28.2",
     "eslint": "10.13.0",
     "neostandard": "0.14.1",
-    "tree-walker-shadow-dom": "1.0.0"
+    "tree-walker-shadow-dom": "1.0.0",
+    "typescript": "6.0.3"
   },
   "devEngines": {
     "runtime": {

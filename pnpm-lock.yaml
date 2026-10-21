@@ -238,6 +238,9 @@ importers:
       '@reporters/github':
         specifier: 2.1.4
         version: 2.1.4
+      '@types/node':
+        specifier: 26.5.0
+        version: 26.5.0
       esbuild:
         specifier: 0.28.2
         version: 0.28.2
@@ -253,6 +256,9 @@ importers:
       tree-walker-shadow-dom:
         specifier: 1.0.0
         version: 1.0.0
+      typescript:
+        specifier: 6.0.3
+        version: 6.0.3
 
 packages:
 

@@ -4,7 +4,9 @@
 // http.Request.Write output (request line, Host, User-Agent, Content-Length,
 // sorted headers, body) and SerializedResponse is Go's http.Response.Write
 // output (status line, Content-Length when known or Connection: close when
-// the length is unknown, sorted headers, still-content-encoded body).
+// the length is unknown, sorted headers, still-content-encoded body). One
+// deliberate divergence: a Content-Length logged on a bodyless status is
+// kept, where Go's resp.Write would drop it (see declaredResponseLength).
 // Before serialization, the Content-Security-Policy headers of HTML 200
 // responses are seeded with a replay nonce so that wpr's replay-time script
 // injection is authorized without wpr's 'unsafe-inline' fallback (see
@@ -121,6 +123,16 @@ const chunkedBody = (body) => {
  * Content-Length the archive must declare, or null when unknown. Chromium
  * accepts h2 bodies shorter than the logged header (END_STREAM frames them),
  * so for h2 the recovered length is authoritative.
+ *
+ * A logged length is declared even for bodyless statuses (1xx/204/304),
+ * unlike Go's resp.Write: its ReadResponse zeroes the ContentLength field of
+ * those statuses and its write path excludes the Content-Length header, so
+ * wpr record archives them without the line. The netlog logged what the
+ * server actually sent: the value is RFC 9110-permitted revalidation
+ * metadata, the replaying browser ignores it for framing, and dropping it
+ * would discard recorded information, so the logged value is kept. HEAD
+ * responses are the same case for Go, which preserves their ContentLength
+ * field, so no divergence exists there.
  * @returns {number|null}
  */
 const declaredResponseLength = (exchange) => {

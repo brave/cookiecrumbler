@@ -273,6 +273,27 @@ describe('netlog to WprGo archive conversion', () => {
     assert.strictEqual(Buffer.from(requests['https://example.com/not-modified'][0].SerializedResponse, 'base64').toString('latin1'), 'HTTP/1.1 304 Not Modified\r\n\r\n')
   })
 
+  it('keeps the logged Content-Length of a bodyless response as metadata', () => {
+    // Go's ReadResponse zeroes the ContentLength field of bodyless statuses
+    // (1xx/204/304) and resp.Write excludes the header from its output, so
+    // wpr record archives a 304 that carried `Content-Length: 12345` without
+    // the line. The netlog logged what the server actually sent: the value is
+    // RFC 9110-permitted revalidation metadata and the replaying browser
+    // ignores it for framing, so the converter keeps the logged value.
+    const archive = archiveFromExchanges([makeExchange({
+      url: 'https://example.com/stale',
+      path: '/stale',
+      userAgent: null,
+      responseStatusLine: 'HTTP/1.1 304 Not Modified',
+      responseCode: 304,
+      responseContentLength: 12345,
+      responseEntries: [],
+      responseBody: Buffer.alloc(0)
+    })], new Map())
+    const response = Buffer.from(archive.Requests['example.com']['https://example.com/stale'][0].SerializedResponse, 'base64').toString('latin1')
+    assert.strictEqual(response, 'HTTP/1.1 304 Not Modified\r\nContent-Length: 12345\r\n\r\n')
+  })
+
   it('serializes h2 status lines with Go\'s StatusText phrases', () => {
     const archive = archiveFromExchanges([
       makeExchange({

@@ -420,6 +420,40 @@ describe('netlog to WprGo archive conversion', () => {
     ])
   })
 
+  it('keeps successful redirect hops whose body the browser never read', async (t) => {
+    // Chromium follows the Location without consuming a redirect's
+    // Content-Length-framed body: the hop succeeds with an empty recovered
+    // body and must stay in the archive, framed by the recovered length
+    const events = []
+    const addExchange = (sourceId, url, { status = 'HTTP/1.1 200 OK', contentLength = 10, body = 'plain-body' } = {}) => {
+      const path = new URL(url).pathname
+      events.push(
+        event(ST.URL_REQUEST, sourceId, ET.REQUEST_ALIVE, { url }),
+        event(ST.URL_REQUEST, sourceId, ET.URL_REQUEST_START_JOB, { method: 'GET', url }),
+        event(ST.HTTP_STREAM_JOB, sourceId + 1, ET.HTTP_STREAM_REQUEST_PROTO, { proto: 'http/1.1' }),
+        event(ST.HTTP_STREAM_JOB, sourceId + 1, ET.SOCKET_POOL_BOUND_TO_SOCKET, { source_dependency: { id: sourceId + 2, type: ST.SOCKET } }),
+        event(ST.URL_REQUEST, sourceId, ET.HTTP_STREAM_REQUEST_BOUND_TO_JOB, { source_dependency: { id: sourceId + 1, type: ST.HTTP_STREAM_JOB } }),
+        event(ST.URL_REQUEST, sourceId, ET.HTTP_TRANSACTION_SEND_REQUEST_HEADERS, { line: `GET ${path} HTTP/1.1\r\n`, headers: ['Host: example.com'] }),
+        event(ST.URL_REQUEST, sourceId, ET.HTTP_TRANSACTION_READ_RESPONSE_HEADERS, { headers: [status, `content-length: ${contentLength}`] }),
+        ...(body.length > 0 ? [event(ST.URL_REQUEST, sourceId, ET.URL_REQUEST_JOB_FILTERED_BYTES_READ, { byte_count: body.length, bytes: Buffer.from(body).toString('base64') })] : [])
+      )
+    }
+    addExchange(1400, 'http://example.com/start', { status: 'HTTP/1.1 301 Moved Permanently', contentLength: 5, body: '' })
+    events.push(event(ST.URL_REQUEST, 1400, ET.URL_REQUEST_REDIRECTED, { location: 'http://example.com/landing' }))
+    addExchange(1400, 'http://example.com/landing', { contentLength: 10, body: 'plain-body' })
+    const netlogPath = await writeNetlog(t, events)
+    const archive = await buildArchiveFromNetLog(netlogPath)
+    assert.deepStrictEqual(Object.keys(archive.Requests['example.com']).sort(), [
+      'http://example.com/landing', 'http://example.com/start'
+    ])
+    assert.strictEqual(decodeResponse(archive.Requests['example.com']['http://example.com/start'][0]), [
+      'HTTP/1.1 301 Moved Permanently',
+      'Content-Length: 0',
+      '',
+      ''
+    ].join('\r\n'))
+  })
+
   it('splits redirect hops into one message per URL and filters browser-internal traffic', async (t) => {
     const firstUrl = 'http://example.com/redirect-me'
     const secondUrl = 'http://example.com/finally'
@@ -464,6 +498,24 @@ describe('netlog to WprGo archive conversion', () => {
   it('throws when the netlog contains no recorded requests', async (t) => {
     const netlogPath = await writeNetlog(t, [])
     await assert.rejects(buildArchiveFromNetLog(netlogPath), { name: 'NetLogError', message: 'netlog contains no recorded requests' })
+  })
+
+  it('rejects a netlog whose every recorded request is dropped as truncated', async (t) => {
+    // Filtering drops aborted HTTP/1 transfers; converting must not report
+    // success with an archive that has nothing replayable
+    const url = 'http://example.com/short'
+    const events = [
+      event(ST.URL_REQUEST, 900, ET.REQUEST_ALIVE, { url }),
+      event(ST.URL_REQUEST, 900, ET.URL_REQUEST_START_JOB, { method: 'GET', url }),
+      event(ST.HTTP_STREAM_JOB, 901, ET.HTTP_STREAM_REQUEST_PROTO, { proto: 'http/1.1' }),
+      event(ST.HTTP_STREAM_JOB, 901, ET.SOCKET_POOL_BOUND_TO_SOCKET, { source_dependency: { id: 902, type: ST.SOCKET } }),
+      event(ST.URL_REQUEST, 900, ET.HTTP_STREAM_REQUEST_BOUND_TO_JOB, { source_dependency: { id: 901, type: ST.HTTP_STREAM_JOB } }),
+      event(ST.URL_REQUEST, 900, ET.HTTP_TRANSACTION_SEND_REQUEST_HEADERS, { line: 'GET /short HTTP/1.1\r\n', headers: ['Host: example.com'] }),
+      event(ST.URL_REQUEST, 900, ET.HTTP_TRANSACTION_READ_RESPONSE_HEADERS, { headers: ['HTTP/1.1 200 OK', 'content-length: 10'] }),
+      event(ST.URL_REQUEST, 900, ET.URL_REQUEST_JOB_FILTERED_BYTES_READ, { byte_count: 5, bytes: Buffer.from('short').toString('base64') })
+    ]
+    const netlogPath = await writeNetlog(t, events)
+    await assert.rejects(buildArchiveFromNetLog(netlogPath), { name: 'NetLogError', message: 'every recorded request was dropped as unreplayable' })
   })
 
   it('parses the NDJSON format written with --net-log-file-format=ndjson', async (t) => {
@@ -746,6 +798,108 @@ describe('CSP replay-nonce seeding', () => {
     const archive = await buildArchiveFromNetLog(netlogPath)
     const [csp] = cspValues(archive.Requests['example.com'][url][0])
     assert.match(csp, /^script-src 'nonce-[A-Za-z0-9+/]+={0,2}' 'self'$/)
+  })
+
+  it('recognizes directive names case-insensitively and normalizes them for wpr', () => {
+    // Browsers read directive names case-insensitively, so ScRiPt-SrC 'self'
+    // blocks the injected script just like script-src; wpr matches lowercase
+    // prefixes, so the name is normalized and the policy seeded like any
+    // other blocking script-src
+    const archive = build([exchange([['Content-Security-Policy', "ScRiPt-SrC 'self'"]])])
+    const [csp] = cspValues(archive.Requests['example.com']['https://example.com/'][0])
+    assert.match(csp, /^script-src 'nonce-[A-Za-z0-9+/]+={0,2}' 'self'$/)
+  })
+
+  it('reads CSP keyword spellings case-insensitively and normalizes them for wpr', () => {
+    // Browsers match 'unsafe-inline' and the nonce prefix without regard to
+    // case, so these policies already admit the injected script; wpr only
+    // recognizes lowercase spellings, so the values are normalized without
+    // seeding
+    const archive = build([
+      exchange([['Content-Security-Policy', "script-src 'UNSAFE-INLINE'"]], { path: '/inline' }),
+      exchange([['Content-Security-Policy', "script-src 'NONCE-abc'"]], { path: '/nonce' })
+    ])
+    const requests = archive.Requests['example.com']
+    assert.deepStrictEqual(cspValues(requests['https://example.com/inline'][0]), ["script-src 'unsafe-inline'"])
+    assert.deepStrictEqual(cspValues(requests['https://example.com/nonce'][0]), ["script-src 'nonce-abc'"])
+  })
+
+  it('honors only the first duplicate directive when deciding whether to seed', () => {
+    // Browsers enforce the first occurrence of a directive name: the
+    // shadowed script-src 'self' must not trigger seeding, which would add a
+    // nonce to the effective first directive and disable its 'unsafe-inline',
+    // blocking site scripts that ran during recording
+    const archive = build([exchange([['Content-Security-Policy', "script-src 'unsafe-inline'; script-src 'self'"]])])
+    assert.deepStrictEqual(cspValues(archive.Requests['example.com']['https://example.com/'][0]), ["script-src 'unsafe-inline'; script-src 'self'"])
+  })
+
+  it('resolves the effective element directive before seeding', () => {
+    // script-src-elem takes over for <script> elements, so the shadowed
+    // script-src 'self' must not trigger seeding of the permissive
+    // script-src-elem: a nonce there would disable its 'unsafe-inline' and
+    // block site scripts that ran during recording
+    const archive = build([exchange([['Content-Security-Policy', "script-src-elem 'unsafe-inline'; script-src 'self'"]])])
+    assert.deepStrictEqual(cspValues(archive.Requests['example.com']['https://example.com/'][0]), ["script-src-elem 'unsafe-inline'; script-src 'self'"])
+  })
+
+  it('mirrors a seeded default-src fallback into an explicit style-src', () => {
+    // Seeding default-src with a nonce makes browsers ignore its
+    // 'unsafe-inline' for styles too, blocking inline styles that ran during
+    // recording; the original directive is mirrored into an explicit
+    // style-src. The script-src-attr mirror would otherwise become wpr's
+    // nonce source without carrying one, so an explicit seeded script-src is
+    // inserted ahead of it.
+    const archive = build([exchange([
+      ['Content-Security-Policy', "default-src 'self' 'unsafe-inline'"],
+      ['Content-Security-Policy', "default-src 'self'; style-src 'unsafe-inline'"]
+    ])])
+    const [first, second] = cspValues(archive.Requests['example.com']['https://example.com/'][0])
+    const nonce = /^default-src 'nonce-([^']+)'/.exec(first)[1]
+    assert.deepStrictEqual(first.split(';').map(directive => directive.trim()), [
+      `default-src 'nonce-${nonce}' 'self' 'unsafe-inline'`,
+      "style-src 'self' 'unsafe-inline'",
+      `script-src 'nonce-${nonce}' 'self' 'unsafe-inline'`,
+      "script-src-attr 'self' 'unsafe-inline'"
+    ])
+    assert.deepStrictEqual(second.split(';').map(directive => directive.trim()), [
+      `default-src 'nonce-${nonce}' 'self'`,
+      "style-src 'unsafe-inline'"
+    ])
+  })
+
+  it('keeps an unsafe-inline script-src-attr and makes the element directive wpr\'s nonce source', () => {
+    // Seeding the attribute directive would revoke its 'unsafe-inline' and
+    // block handlers that ran during recording; instead the element
+    // directive is seeded and moved ahead of it, so wpr reads its nonce from
+    // the script-src and the attribute permission stays untouched
+    const archive = build([exchange([['Content-Security-Policy', "script-src-attr 'unsafe-inline'; script-src 'self'"]])])
+    const [csp] = cspValues(archive.Requests['example.com']['https://example.com/'][0])
+    const nonce = /'nonce-([^']+)'/.exec(csp)[1]
+    assert.deepStrictEqual(csp.split(';').map(directive => directive.trim()), [
+      `script-src 'nonce-${nonce}' 'self'`,
+      "script-src-attr 'unsafe-inline'"
+    ])
+  })
+
+  it('splits comma-separated policies into separately seeded entries', () => {
+    // wpr's transformers treat the whole value as one semicolon-split blob,
+    // so a nonce on the first comma-policy leaves the second blocking the
+    // injected script; splitting them into their own header entries seeds
+    // both
+    const archive = build([exchange([['Content-Security-Policy', "script-src 'self', script-src 'self'"]])])
+    const values = cspValues(archive.Requests['example.com']['https://example.com/'][0])
+    assert.strictEqual(values.length, 2)
+    const nonce = /^script-src 'nonce-([^']+)' 'self'$/.exec(values[0])[1]
+    assert.strictEqual(values[1], `script-src 'nonce-${nonce}' 'self'`)
+  })
+
+  it('normalizes CSP whitespace so wpr recognizes existing nonces', () => {
+    // wpr splits directive tokens on literal spaces, so a tab-separated
+    // nonce is invisible to it and it would rewrite the policy into one that
+    // blocks the tag; browsers read any whitespace, so the value is
+    // collapsed and left unseeded
+    const archive = build([exchange([['Content-Security-Policy', "script-src\t'nonce-abc'"]])])
+    assert.deepStrictEqual(cspValues(archive.Requests['example.com']['https://example.com/'][0]), ["script-src 'nonce-abc'"])
   })
 })
 

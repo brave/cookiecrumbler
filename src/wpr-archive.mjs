@@ -4,15 +4,17 @@
 // http.Request.Write output (request line, Host, User-Agent, Content-Length,
 // sorted headers, body) and SerializedResponse is Go's http.Response.Write
 // output (status line, Content-Length when known or Connection: close when
-// the length is unknown, sorted headers, still-content-encoded body). Two
-// deliberate divergences: a Content-Length logged on a bodyless status is
-// kept, where Go's resp.Write would drop it (see declaredResponseLength), and
-// a handler-permitting seeded directive is mirrored into an explicit
-// script-src-attr, which wpr record archives without (see seedCspReplayNonce).
-// Before serialization, the Content-Security-Policy headers of HTML 200
-// responses are seeded with a replay nonce so that wpr's replay-time script
-// injection is authorized without wpr's 'unsafe-inline' fallback (see
-// seedCspReplayNonce).
+// the length is unknown, sorted headers, still-content-encoded body). Before
+// serialization, the Content-Security-Policy headers of HTML 200 responses
+// are seeded with a replay nonce so that wpr's replay-time script injection
+// is authorized without wpr's 'unsafe-inline' fallback (see
+// seedCspReplayNonce). Deliberate divergences from wpr record: a
+// Content-Length logged on a bodyless status is kept, where Go's resp.Write
+// would drop it (see declaredResponseLength); enforced CSP values are
+// normalized for wpr's parser (whitespace, keyword case, duplicate
+// directives, comma-separated policies become their own header entries);
+// directives whose recorded inline permissions a seeded nonce would revoke
+// are mirrored into explicit script-src-attr / style-src directives.
 
 import crypto from 'node:crypto'
 
@@ -124,7 +126,10 @@ const chunkedBody = (body) => {
 /**
  * Content-Length the archive must declare, or null when unknown. Chromium
  * accepts h2 bodies shorter than the logged header (END_STREAM frames them),
- * so for h2 the recovered length is authoritative.
+ * so for h2 the recovered length is authoritative. The same holds for a
+ * followed h1 redirect: the browser never reads the redirect body, so the
+ * recovered length is all the archive can frame the response by (see
+ * isTruncatedHttp1Body).
  *
  * A logged length is declared even for bodyless statuses (1xx/204/304),
  * unlike Go's resp.Write: its ReadResponse zeroes the ContentLength field of
@@ -140,6 +145,10 @@ const chunkedBody = (body) => {
 const declaredResponseLength = (exchange) => {
   if (exchange.responseContentLength === null) return null
   if (!exchange.isHttp1 && expectsResponseBody(exchange)) return exchange.responseBody.length
+  if (isRedirect(exchange) && expectsResponseBody(exchange) &&
+    exchange.responseContentLength !== exchange.responseBody.length) {
+    return exchange.responseBody.length
+  }
   return exchange.responseContentLength
 }
 
@@ -237,59 +246,114 @@ const serializeResponse = (exchange) => {
   return Buffer.concat([head, exchange.responseBody])
 }
 
-// CSP directive keyword tokens as wpr's transformers.go matches them:
-// case-sensitive, single-quote wrapped, whitespace separated.
+// CSP directive tokens as browsers read them: whitespace-separated, with
+// case-insensitive names and keyword spellings (CSP spec). wpr's
+// transformers.go splits values on literal spaces and matches lowercase
+// prefixes, so values are normalized before any directive reasoning (see
+// normalizeScriptDirective).
 const cspDirectiveTokens = (directive) => directive.trim().split(/\s+/).filter(Boolean)
 
-const cspFirstNonce = (directive) => {
-  for (const token of cspDirectiveTokens(directive)) {
-    if (token.startsWith("'nonce-")) return token.slice("'nonce-".length).replace(/'$/, '')
-  }
-  return ''
+const cspDirectiveName = (directive) => cspDirectiveTokens(directive)[0]?.toLowerCase() ?? ''
+
+// 'script-src' also prefix-matches script-src-elem/script-src-attr, exactly
+// like wpr's HasPrefix(directive, "script-src") checks
+const isScriptDirectiveName = (name) => name === 'default-src' || name.startsWith('script-src')
+
+const cspHasUnsafeInline = (directive) => cspDirectiveTokens(directive).some(token => token.toLowerCase() === "'unsafe-inline'")
+
+const cspHasSha = (directive) => cspDirectiveTokens(directive).some(token => /^'sha(?:256|384|512)-/i.test(token))
+
+const cspHasNonce = (directive) => cspDirectiveTokens(directive).some(token => /^'nonce-/i.test(token))
+
+/**
+ * Lowercases the spellings wpr pattern-matches in a script-governing
+ * directive: its name ('script-src*' / 'default-src') and the keyword tokens
+ * it compares against ('none', 'unsafe-inline', the 'nonce-' and
+ * 'sha256-…' prefixes). Browsers read all of these case-insensitively while
+ * wpr matches lowercase literals, so the normalized form is what wpr can
+ * recognize (CSP keyword values like the nonce base64 keep their case). The
+ * directive's leading/trailing whitespace is preserved.
+ */
+const normalizeScriptDirective = (directive) => {
+  const body = cspDirectiveTokens(directive).map((token, index) => {
+    if (index === 0) return token.toLowerCase()
+    if (/^'nonce-/i.test(token)) return `'nonce-${token.slice("'nonce-".length)}`
+    if (/^'sha(?:256|384|512)-/i.test(token)) {
+      const dash = token.indexOf('-')
+      return token.slice(0, dash + 1).toLowerCase() + token.slice(dash + 1)
+    }
+    if (/^'(?:unsafe-inline|none)'$/i.test(token)) return token.toLowerCase()
+    return token
+  }).join(' ')
+  return directive.slice(0, directive.length - directive.trimStart().length) + body +
+    directive.slice(directive.trimEnd().length)
 }
 
-const cspHasUnsafeInline = (directive) => cspDirectiveTokens(directive).includes("'unsafe-inline'")
-
-const cspHasSha = (directive) => cspDirectiveTokens(directive).some(token => /^'sha(256|384|512)-/.test(token))
+/**
+ * Splits an enforced CSP value into its policies' directive lists. A value
+ * may carry comma-separated policies, which browsers enforce as separate
+ * policies while wpr's transformers treat the whole value as one
+ * semicolon-split blob — a nonce on the first comma-policy would leave the
+ * others blocking wpr's injected script. Each policy becomes its own header
+ * entry, and within a policy whitespace runs collapse to single spaces
+ * (browsers read any whitespace; wpr splits on literal ones).
+ * @param {string} value
+ * @returns {string[][]} one directive list per policy
+ */
+const parseCspPolicies = (value) => value.replace(/\s+/g, ' ').split(',')
+  .map(policy => policy.split(';').filter(directive => directive.trim() !== ''))
+  .filter(policy => policy.length > 0)
+  .map(policy => policy.map(directive => isScriptDirectiveName(cspDirectiveName(directive))
+    ? normalizeScriptDirective(directive)
+    : directive))
 
 /**
  * Seeds the enforced Content-Security-Policy headers of an HTML 200 exchange
- * with a fresh nonce so that wpr's replay-time script injection cannot relax
- * the site's policy. Returns the (possibly new) entries array; the input is
- * never written to.
+ * with a fresh nonce so that wpr's replay-time script injection is
+ * authorized without wpr relaxing the site's policy. Returns the (possibly
+ * new) entries array; the input is never written to, and values already in
+ * canonical form come back byte-identical.
  *
  * At replay, wpr injects deterministic.js into every archived HTML 200
- * response and rewrites the served CSP: a script-src (fallback default-src)
- * directive with neither a nonce nor a hash gets 'unsafe-inline' appended,
- * which would un-block the site's own inline scripts that the live site (and
- * this recording) blocked. When the archived headers instead carry a nonce,
- * wpr copies the first nonce it finds onto its injected script tag and leaves
- * the policy intact, so only the injected script gains permission and
- * CSP-blocked site scripts stay blocked on both sides of record/replay.
+ * response and rewrites the served CSP: its transformers pick the first
+ * 'script-src'-prefixed directive of the first CSP header (falling back to
+ * the header's last 'default-src') as both the nonce source for the injected
+ * tag and the rewrite target, and a target carrying neither a nonce nor a
+ * hash gets 'unsafe-inline' appended — un-blocking the site's own inline
+ * scripts that the live site (and this recording) blocked. When the archived
+ * headers instead carry a nonce on that directive, wpr copies it onto the
+ * injected tag and leaves the policy intact, so only the injected script
+ * gains permission and CSP-blocked site scripts stay blocked on both sides
+ * of record/replay.
  *
- * Seeding also stops wpr from relaxing script-src-attr rewrite targets:
- * wpr's rewrite picks the first directive whose name starts with
- * 'script-src', which matches script-src-attr, and a target carrying
- * neither a nonce, a hash nor 'unsafe-inline' (typically 'none') gets
- * 'unsafe-inline' appended at replay, un-blocking event handlers the
- * recording had blocked. Seeding the replay nonce into such a target
- * leaves wpr's rewrite idle, and since handler attributes can never carry
- * a nonce, the policy keeps blocking handlers exactly as it did.
+ * The reasoning runs per policy on two directives:
  *
- * Seeding is permission-neutral for the site: the added nonce matches nothing
- * the site ships, and a directive that admits inline scripts via
- * 'unsafe-inline' keeps its original bytes unless another enforced policy
- * blocks arbitrary inline scripts anyway (wpr then needs the nonce from the
- * first script-governing directive to tag its script, and the conjunction
- * already blocked those scripts at record time).
+ * - the element directive governing wpr's <script> element, resolved along
+ *   the script-src-elem → script-src → default-src fallback chain. A
+ *   shadowed script-src never applies to elements, and script-src-attr only
+ *   governs event handlers, so neither triggers seeding on its own.
+ * - wpr's directive, which must both carry the nonce and govern the tag.
  *
- * Seeding is permission-neutral for inline event handlers too: a seeded
- * directive that is the handlers' fallback (script-src, or default-src where
- * the policy has no script-src) and admitted them via 'unsafe-inline' is
- * copied verbatim into an explicit script-src-attr appended to the policy,
- * since the added nonce would otherwise disable 'unsafe-inline' for handlers
- * (a nonce makes browsers ignore it). The copy is a deliberate byte
- * divergence from wpr record, which archives no such directive.
+ * Seeding is needed when some policy's element directive blocks the tag. It
+ * is permission-neutral for the site: the added nonce matches nothing the
+ * site ships, and a directive admitting inline scripts via 'unsafe-inline'
+ * keeps its original bytes unless another enforced policy blocks arbitrary
+ * inline scripts anyway (the conjunction already blocked them at record
+ * time, and wpr then needs the nonce from the first script-governing
+ * directive to tag its script).
+ *
+ * Seeding is permission-neutral for inline event handlers too: an attribute
+ * directive admitting handlers is never seeded (the nonce would revoke its
+ * 'unsafe-inline'), and a seeded directive that served as the handlers'
+ * fallback (script-src, or default-src where the policy has no script-src)
+ * has its original form copied verbatim into an explicit script-src-attr
+ * appended to the policy. The same mirroring keeps a seeded default-src from
+ * revoking recorded inline-style permissions through an explicit style-src.
+ * The copies are a deliberate byte divergence from wpr record, which
+ * archives neither. Since the appended attribute directive would otherwise
+ * become wpr's nonce source without carrying a nonce, the element-governing
+ * directive is moved ahead of it (or an explicit seeded script-src is
+ * inserted before it) — directive order is insignificant to browsers.
  */
 const seedCspReplayNonce = (exchange, nonce) => {
   if (exchange.responseCode !== 200) return exchange.responseEntries
@@ -301,121 +365,103 @@ const seedCspReplayNonce = (exchange, nonce) => {
   })
   if (cspIndexes.length === 0) return exchange.responseEntries
 
-  // Raw directive lists per enforced header value; untouched directives keep
-  // their original bytes.
-  const valueDirectives = cspIndexes.map(index => exchange.responseEntries[index][1].split(';'))
-
-  // wpr's getCSPDirective scans the enforced headers for the first directive
-  // whose trimmed form starts with 'script-src', falling back to
-  // 'default-src'; the first nonce found there is copied onto its injected
-  // script tag. Seeding that directive controls the tag's nonce.
-  let tagSource = null
-  for (const name of ['script-src', 'default-src']) {
-    for (const directives of valueDirectives) {
-      const index = directives.findIndex(directive => directive.trim().startsWith(name))
-      if (index !== -1) {
-        tagSource = { directives, index }
-        break
-      }
-    }
-    if (tagSource !== null) break
-  }
-  if (tagSource === null) return exchange.responseEntries
-
-  // Per value, wpr's getUpdatedSingleCSPHeader rewrites the first
-  // 'script-src'-prefixed directive, else the last 'default-src'-prefixed
-  // one; rewritten sha directives get wpr's script hash appended.
-  const rewrittenIndex = valueDirectives.map(directives => {
-    let index = -1
-    for (let i = 0; i < directives.length; i++) {
-      const trimmed = directives[i].trim()
-      if (trimmed.startsWith('script-src') || trimmed.startsWith('default-src')) {
-        index = i
-        if (trimmed.startsWith('script-src')) break
-      }
-    }
-    return index
-  })
-
-  // All script-element-restricting directives across the enforced policies:
-  // 'script-src' and 'script-src-elem' govern <script> elements, and
-  // 'default-src' only restricts scripts when the policy has neither (its
-  // script-src takes over for scripts). 'script-src-attr' governs
-  // event-handler attributes and never applies to the injected element, so it
-  // is left out: seeding it could not authorize the tag, and rewriting it
-  // would only alter the site's own permissions.
-  const restricted = []
-  valueDirectives.forEach((directives, valueIndex) => {
-    const names = directives.map(directive => directive.trim().split(/\s+/)[0] ?? '')
-    const elementScoped = names.some(name => name === 'script-src' || name === 'script-src-elem')
-    directives.forEach((directive, index) => {
-      const name = names[index]
-      if (name === 'script-src' || name === 'script-src-elem' ||
-        (name === 'default-src' && !elementScoped)) {
-        restricted.push({ directives, index, rewritten: index === rewrittenIndex[valueIndex] })
-      }
-    })
-  })
-
-  const tagNonce = cspFirstNonce(tagSource.directives[tagSource.index])
-  const isTagSource = entry => entry.directives === tagSource.directives && entry.index === tagSource.index
   const nonceToken = `'nonce-${nonce}'`
+  const hasOurNonce = (directive) => cspDirectiveTokens(directive).includes(nonceToken)
+  // Mutable directive lists per enforced header, one per comma-separated policy
+  const cspPolicies = cspIndexes.map(index => parseCspPolicies(exchange.responseEntries[index][1]))
+
+  // wpr reads only the first CSP header (Go's Header.Get): its nonce source
+  // and rewrite target come from the first policy's wpr directive
+  const wprDirectiveIndex = (directives) => {
+    const script = directives.findIndex(directive => cspDirectiveName(directive).startsWith('script-src'))
+    if (script !== -1) return script
+    return directives.map(cspDirectiveName).lastIndexOf('default-src')
+  }
+  const firstPolicy = cspPolicies[0]?.[0]
+  let tagSource = null
+  if (firstPolicy !== undefined) {
+    const index = wprDirectiveIndex(firstPolicy)
+    if (index !== -1) tagSource = { directives: firstPolicy, index }
+  }
+
+  // The directive governing <script> elements: the script-src-elem →
+  // script-src → default-src fallback chain (CSP effective-directive rules)
+  const elementDirectiveIndex = (directives) => {
+    const names = directives.map(cspDirectiveName)
+    for (const name of ['script-src-elem', 'script-src', 'default-src']) {
+      const index = names.indexOf(name)
+      if (index !== -1) return index
+    }
+    return -1
+  }
+  const isTagSource = (directives, index) =>
+    tagSource !== null && directives === tagSource.directives && index === tagSource.index
+
+  // Whether the directive admits wpr's injected <script> element. The tag
+  // carries the tag source's own nonce (wpr copies the first nonce it finds)
+  // or wpr's script hash (appended to its sha-carrying rewrite target), so
+  // the tag source admits the tag through either; every other directive must
+  // carry our replay nonce or admit arbitrary inline scripts.
+  const admitsTag = (directives, index) => {
+    const directive = directives[index]
+    if (hasOurNonce(directive) || cspHasUnsafeInline(directive)) return true
+    return isTagSource(directives, index) && (cspHasNonce(directive) || cspHasSha(directive))
+  }
+
   const seed = ({ directives, index }) => {
     const original = cspDirectiveTokens(directives[index])
-    const kept = original.filter(token => token !== "'none'")
+    const kept = original.filter(token => token.toLowerCase() !== "'none'")
     if (!kept.includes(nonceToken)) kept.splice(1, 0, nonceToken)
     directives[index] = kept.join(' ')
-    // Inline event handlers resolve script-src-attr to script-src (falling
-    // back to default-src), never to script-src-elem: when the seeded
-    // directive is that fallback and its 'unsafe-inline' admitted handlers at
-    // record time, the added nonce would disable it for them (a nonce makes
-    // browsers ignore 'unsafe-inline'). Copy the original directive verbatim
-    // into an explicit script-src-attr so handlers keep their recorded
-    // permission. When the original carries a nonce or a hash, or the policy
-    // already has a script-src-attr (which also guards a second copy),
-    // seeding never changes handler behavior and nothing is appended.
-    // Appending keeps the restricted indices valid; the copy is a deliberate
-    // byte divergence from wpr record.
-    const names = directives.map(directive => directive.trim().split(/\s+/)[0] ?? '')
-    const isHandlerFallback = original[0] === 'script-src' ||
-      (original[0] === 'default-src' && !names.includes('script-src'))
-    const revokesUnsafeInline = original.includes("'unsafe-inline'") &&
-      cspFirstNonce(original.join(' ')) === '' && !cspHasSha(original.join(' '))
-    if (isHandlerFallback && !names.includes('script-src-attr') && revokesUnsafeInline) {
+    // The added nonce makes browsers ignore 'unsafe-inline' in the seeded
+    // directive, revoking the inline permissions it granted as a fallback.
+    // Mirror the original into explicit sub-directives so the recorded
+    // permissions survive: script-src-attr for event handlers and style-src
+    // for inline styles. script-src-elem never governs either, so seeding it
+    // adds no mirror; a directive that already carried a nonce or a hash had
+    // its 'unsafe-inline' ignored before seeding too.
+    const revokesUnsafeInline = cspHasUnsafeInline(original.join(' ')) &&
+      !cspHasNonce(original.join(' ')) && !cspHasSha(original.join(' '))
+    if (!revokesUnsafeInline) return
+    const name = original[0].toLowerCase()
+    const names = directives.map(cspDirectiveName)
+    if (name === 'default-src') {
+      if (!names.includes('style-src')) directives.push(`style-src ${original.slice(1).join(' ')}`)
+      if (!names.includes('script-src') && !names.includes('script-src-attr')) {
+        directives.push(`script-src-attr ${original.slice(1).join(' ')}`)
+      }
+    } else if (name === 'script-src' && !names.includes('script-src-attr')) {
       directives.push(`script-src-attr ${original.slice(1).join(' ')}`)
     }
   }
 
-  // Seeding is needed when any directive would block wpr's injected script or
-  // be relaxed by wpr with 'unsafe-inline'.
-  const needsSeed = restricted.some(({ directives, index, rewritten }) => {
-    const firstNonce = cspFirstNonce(directives[index])
-    if (firstNonce !== '') return firstNonce !== tagNonce
-    if (cspHasSha(directives[index])) return !rewritten
-    if (cspHasUnsafeInline(directives[index])) return false
-    return true
-  })
+  const needsSeed = cspPolicies.some(policies => policies.some(directives => {
+    const index = elementDirectiveIndex(directives)
+    return index !== -1 && !admitsTag(directives, index)
+  }))
 
-  let changed = false
-  const seedTracked = (entry) => {
-    seed(entry)
-    changed = true
-  }
-  if (needsSeed) {
-    seedTracked(tagSource)
-    for (const entry of restricted) {
-      if (isTagSource(entry)) continue
-      const directive = entry.directives[entry.index]
-      if (cspFirstNonce(directive) !== '') {
-        seedTracked(entry) // a foreign nonce would block the seeded tag; ours coexists
-      } else if (cspHasSha(directive) && entry.rewritten) {
-        continue // wpr appends its script hash here, authorizing the tag
-      } else if (!cspHasSha(directive) && cspHasUnsafeInline(directive)) {
-        continue // already admits any inline script, including wpr's
-      } else {
-        seedTracked(entry) // wpr would relax it with 'unsafe-inline', or it blocks the tag
-      }
+  if (needsSeed && tagSource !== null) {
+    // Seeding the tag source puts our nonce first, so wpr tags its injected
+    // script with it; the conjunction already blocked what it admits at
+    // record time (needsSeed means some enforced policy blocks the tag). An
+    // attribute directive admitting inline handlers is never seeded — the
+    // nonce would revoke its 'unsafe-inline' — so the post-pass below moves
+    // the element-governing directive ahead of it instead.
+    const directive = tagSource.directives[tagSource.index]
+    if (!(cspDirectiveName(directive) === 'script-src-attr' && cspHasUnsafeInline(directive))) {
+      seed(tagSource)
     }
+    // Every policy's element directive must admit the seeded tag: a foreign
+    // nonce would block it (ours coexists with the site's), a blocking one
+    // would be relaxed by wpr. Directives already admitting arbitrary inline
+    // scripts are left alone — seeding would revoke that permission.
+    cspPolicies.forEach(policies => policies.forEach(directives => {
+      const index = elementDirectiveIndex(directives)
+      if (index === -1) return
+      const directive = directives[index]
+      if (hasOurNonce(directive) || cspHasUnsafeInline(directive)) return
+      seed({ directives, index })
+    }))
   }
 
   // wpr's rewrite target can itself be a script-src-attr directive (its name
@@ -426,30 +472,66 @@ const seedCspReplayNonce = (exchange, nonce) => {
   // a nonce, so the policy keeps blocking handlers exactly as before. This
   // runs whether or not needsSeed: when the element directives already admit
   // the tag, the attribute target is the only thing wpr would still relax.
-  // These directives don't govern the injected tag, so they are not part of
-  // restricted.
-  valueDirectives.forEach((directives, valueIndex) => {
-    const index = rewrittenIndex[valueIndex]
+  // These directives don't govern the injected tag, so they are not seeded
+  // as element directives.
+  cspPolicies.forEach(policies => policies.forEach(directives => {
+    const index = wprDirectiveIndex(directives)
     if (index === -1) return
     const directive = directives[index]
-    if (directive.trim().split(/\s+/)[0] !== 'script-src-attr') return
-    if (cspFirstNonce(directive) !== '' || cspHasSha(directive) || cspHasUnsafeInline(directive)) return
-    seedTracked({ directives, index })
-  })
+    if (cspDirectiveName(directive) !== 'script-src-attr') return
+    if (cspHasNonce(directive) || cspHasSha(directive) || cspHasUnsafeInline(directive)) return
+    seed({ directives, index })
+  }))
 
-  if (!changed) return exchange.responseEntries
+  // Make wpr's nonce source element-governing: after seeding, the first
+  // 'script-src'-prefixed directive must carry our nonce for the tag to be
+  // admitted, and an attribute directive never does (it only carries one
+  // when seeded above, which never applies here). When a seeded element
+  // directive is shadowed behind a nonce-less script-src-attr — a
+  // pre-existing one admitting handlers, or the mirror appended by seed() —
+  // move the element directive ahead of it, or insert an explicit seeded
+  // script-src cloned from the seeded default-src where the policy has no
+  // script-src of its own. Without this, wpr would read its nonce from the
+  // attribute directive, find none, and its injected script would stay
+  // blocked.
+  cspPolicies.forEach(policies => policies.forEach(directives => {
+    if (!directives.some(hasOurNonce)) return
+    const first = directives.findIndex(directive => cspDirectiveName(directive).startsWith('script-src'))
+    if (first === -1 || cspDirectiveName(directives[first]) !== 'script-src-attr') return
+    if (hasOurNonce(directives[first])) return
+    const elem = elementDirectiveIndex(directives)
+    if (elem === -1 || !hasOurNonce(directives[elem])) return
+    if (cspDirectiveName(directives[elem]) === 'default-src') {
+      directives.splice(first, 0, `script-src ${cspDirectiveTokens(directives[elem]).slice(1).join(' ')}`)
+    } else {
+      const [elementDirective] = directives.splice(elem, 1)
+      directives.splice(directives.findIndex(directive => cspDirectiveName(directive) === 'script-src-attr'), 0, elementDirective)
+    }
+  }))
 
-  // Rebuild the entries: CSP values may have been rewritten, all other
-  // entries (and their tuples) are reused as-is
-  return exchange.responseEntries.map((entry, index) => {
+  // Rebuild the entries: each comma-separated policy becomes its own header
+  // entry, all other entries (and their tuples) are reused as-is. Untouched
+  // values come back byte-identical.
+  const rebuilt = exchange.responseEntries.flatMap((entry, index) => {
     const cspIndex = cspIndexes.indexOf(index)
-    return cspIndex === -1 ? entry : [entry[0], valueDirectives[cspIndex].join(';')]
+    if (cspIndex === -1) return [entry]
+    return cspPolicies[cspIndex].map(directives => [entry[0], directives.join(';')])
   })
+  const unchanged = rebuilt.length === exchange.responseEntries.length && rebuilt.every((entry, index) => {
+    const original = exchange.responseEntries[index]
+    return entry === original || (entry[0] === original[0] && entry[1] === original[1])
+  })
+  return unchanged ? exchange.responseEntries : rebuilt
 }
 
 // HEAD, 204 and 304 responses carry no body even when a length is logged
 const expectsResponseBody = (exchange) =>
   exchange.method !== 'HEAD' && exchange.responseCode !== 204 && exchange.responseCode !== 304
+
+// A successful 3xx hop: Chromium follows the Location without reading the
+// redirect body, so the hop completes with an empty recovered body no matter
+// what Content-Length was logged
+const isRedirect = (exchange) => exchange.responseCode >= 300 && exchange.responseCode < 400
 
 // An aborted transfer recovers a body shorter than the logged
 // Content-Length. Exchanges are dropped exactly where the browser itself
@@ -464,13 +546,17 @@ const expectsResponseBody = (exchange) =>
 // stream_closed_), and the exchange is kept as-is.
 // Chunked and EOF-delimited HTTP/1.x bodies are delimited without a
 // length, and HEAD/204/304 responses carry no body even when a length is
-// logged.
+// logged. A followed redirect is a successful hop, not a failed transfer:
+// the browser never reads its body, so the mismatch only means the
+// recovered length frames the archived response (see
+// declaredResponseLength).
 const isTruncatedHttp1Body = (exchange) =>
   exchange.isHttp1 &&
   !exchange.responseChunked &&
   expectsResponseBody(exchange) &&
   exchange.responseContentLength !== null &&
-  exchange.responseContentLength !== exchange.responseBody.length
+  exchange.responseContentLength !== exchange.responseBody.length &&
+  !isRedirect(exchange)
 
 /**
  * Builds a WprGo archive object (see Archive in webpagereplay's archive.go)
@@ -493,20 +579,8 @@ export const archiveFromExchanges = (exchanges, negotiatedProtocols, { injectedS
   const seeded = exchanges.map(exchange => ({ ...exchange, responseEntries: seedCspReplayNonce(exchange, replayNonce) }))
   const requests = new Map() // authority -> Map(url -> [message])
   for (const exchange of seeded) {
-    // An aborted transfer recovers a body shorter than the logged
-    // Content-Length. Exchanges are dropped exactly where the browser itself
-    // fails them with an explicit error, which is a property of the transfer
-    // framing: HTTP/1.x frames the body by counting Content-Length bytes, so
-    // a connection close before that count makes the browser fail the request
-    // with ERR_CONTENT_LENGTH_MISMATCH (http_stream_parser.cc), and a
-    // truncated chunked body fails with ERR_INCOMPLETE_CHUNKED_ENCODING.
-    // Chromium's HTTP/2 stack has no such check: the response is framed by
-    // END_STREAM, so a stream ending cleanly with fewer DATA bytes than
-    // Content-Length is accepted (IsResponseBodyComplete() is just
-    // stream_closed_), and the exchange is kept as-is.
-    // Chunked and EOF-delimited HTTP/1.x bodies are delimited without a
-    // length, and HEAD/204/304 responses carry no body even when a length is
-    // logged.
+    // Aborted transfers are dropped exactly where the browser itself fails
+    // them; see isTruncatedHttp1Body.
     if (isTruncatedHttp1Body(exchange)) {
       console.warn(`Skipping ${exchange.url}: logged Content-Length ${exchange.responseContentLength} does not match the ${exchange.responseBody.length} byte recovered body`)
       continue
@@ -563,5 +637,11 @@ export const buildArchiveFromNetLog = async (netlogPath, options = {}) => {
   if (parsed.exchanges.length === 0) {
     throw new NetLogError('netlog contains no recorded requests')
   }
-  return archiveFromExchanges(parsed.exchanges, parsed.negotiatedProtocols, options)
+  const archive = archiveFromExchanges(parsed.exchanges, parsed.negotiatedProtocols, options)
+  // Filtering can drop every reconstructed exchange (truncated HTTP/1
+  // bodies); reporting success would hide a capture with nothing replayable
+  if (Object.keys(archive.Requests).length === 0) {
+    throw new NetLogError('every recorded request was dropped as unreplayable')
+  }
+  return archive
 }

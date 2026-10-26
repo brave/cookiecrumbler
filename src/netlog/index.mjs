@@ -170,8 +170,11 @@ export const buildExchangesFromNetLog = async (netlogPath, options = {}) => {
       // REQUEST_ALIVE end) carry net_error only when the job genuinely failed
       // (truncated body, reset H2 stream, ...), mirroring the browser's own
       // explicit error; cancellations are deliberately not logged as errors
-      // (url_request.cc logs net_error "only on failure"). The in-flight hop
-      // never completed, so it is dropped like the browser did.
+      // (url_request.cc logs net_error "only on failure"). The failure
+      // attaches to the in-flight hop: the hop whose request the failing job
+      // sent. Each job start seals the previous hop, so a completed redirect
+      // hop is immune to failures of the next job, which fails before its own
+      // request ever had headers.
       if (hop !== null && typeof params.net_error === 'number' && params.net_error !== 0) {
         hop.failed = true
       }
@@ -179,6 +182,13 @@ export const buildExchangesFromNetLog = async (netlogPath, options = {}) => {
         if (typeof params.url === 'string') url = params.url
       } else if (event.type === ET.startJob) {
         if (typeof params.url === 'string') url = params.url
+        // A job start seals the previous hop: the next job (e.g. the redirect
+        // destination) begins only after the previous hop's response was fully
+        // logged, and failures logged before the next send-headers event (DNS,
+        // proxy or connection setup, ...) belong to the still header-less job.
+        // END-phase events, which carry the job outcome (and net_error), never
+        // seal.
+        if (event.phase !== 'PHASE_END') hop = null
         // Browser-internal traffic (updater, safebrowsing, telemetry, background
         // services) is issued outside any page frame: its network
         // isolation/anonymization key has no accountable frame site (verified in

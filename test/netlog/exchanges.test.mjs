@@ -218,6 +218,28 @@ describe('buildExchangesFromNetLog', () => {
     assert.deepStrictEqual(exchanges.map(e => e.requestBody.toString()), ['', 'AAAAA', 'BBBBB'])
   })
 
+  it('keeps a completed redirect hop when the destination fails before sending headers', async (t) => {
+    // The 302 hop is done once its response is logged. The destination job
+    // then fails while connecting: its net_error events arrive while `hop`
+    // would still point at the completed redirect hop, which must not be
+    // marked failed and dropped.
+    const events = [
+      event(ST.URL_REQUEST, 530, ET.REQUEST_ALIVE, { url: 'http://example.com/redirect-me' }),
+      event(ST.URL_REQUEST, 530, ET.URL_REQUEST_START_JOB, { method: 'GET', url: 'http://example.com/redirect-me' }),
+      event(ST.HTTP_STREAM_JOB, 531, ET.HTTP_STREAM_REQUEST_PROTO, { proto: 'http/1.1' }),
+      event(ST.URL_REQUEST, 530, ET.HTTP_STREAM_REQUEST_BOUND_TO_JOB, { source_dependency: { id: 531, type: ST.HTTP_STREAM_JOB } }),
+      event(ST.URL_REQUEST, 530, ET.HTTP_TRANSACTION_SEND_REQUEST_HEADERS, { line: 'GET /redirect-me HTTP/1.1\r\n', headers: ['Host: example.com'] }),
+      event(ST.URL_REQUEST, 530, ET.HTTP_TRANSACTION_READ_RESPONSE_HEADERS, { headers: ['HTTP/1.1 302 Found'] }),
+      event(ST.URL_REQUEST, 530, ET.URL_REQUEST_REDIRECTED, { location: 'http://example.com/dead-end' }),
+      event(ST.URL_REQUEST, 530, ET.URL_REQUEST_START_JOB, { method: 'GET', url: 'http://example.com/dead-end' }),
+      // the destination job fails before any request headers are sent
+      event(ST.URL_REQUEST, 530, ET.URL_REQUEST_START_JOB, { net_error: -105 }),
+      event(ST.URL_REQUEST, 530, ET.REQUEST_ALIVE, { net_error: -105 })
+    ]
+    const { exchanges } = await buildExchangesFromNetLog(await writeNetlog(t, events))
+    assert.deepStrictEqual(exchanges.map(e => e.url), ['http://example.com/redirect-me'])
+  })
+
   it('splits redirect hops into one exchange per URL', async (t) => {
     const firstUrl = 'http://example.com/redirect-me'
     const secondUrl = 'http://example.com/finally'

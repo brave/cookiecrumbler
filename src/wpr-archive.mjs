@@ -241,8 +241,11 @@ const cspHasSha = (directive) => cspDirectiveTokens(directive).some(token => /^'
  * CSP-blocked site scripts stay blocked on both sides of record/replay.
  *
  * Seeding is permission-neutral for the site: the added nonce matches nothing
- * the site ships, and directives that already admit wpr's tag on their own
- * (nonce, hash, 'unsafe-inline') keep their original bytes.
+ * the site ships, and a directive that admits inline scripts via
+ * 'unsafe-inline' keeps its original bytes unless another enforced policy
+ * blocks arbitrary inline scripts anyway (wpr then needs the nonce from the
+ * first script-governing directive to tag its script, and the conjunction
+ * already blocked those scripts at record time).
  */
 const seedCspReplayNonce = (exchange, nonce) => {
   if (exchange.responseCode !== 200) return exchange.responseEntries
@@ -290,12 +293,21 @@ const seedCspReplayNonce = (exchange, nonce) => {
     return index
   })
 
-  // All script-restricting directives across the enforced policies.
+  // All script-element-restricting directives across the enforced policies:
+  // 'script-src' and 'script-src-elem' govern <script> elements, and
+  // 'default-src' only restricts scripts when the policy has neither (its
+  // script-src takes over for scripts). 'script-src-attr' governs
+  // event-handler attributes and never applies to the injected element, so it
+  // is left out: seeding it could not authorize the tag, and rewriting it
+  // would only alter the site's own permissions.
   const restricted = []
   valueDirectives.forEach((directives, valueIndex) => {
+    const names = directives.map(directive => directive.trim().split(/\s+/)[0] ?? '')
+    const elementScoped = names.some(name => name === 'script-src' || name === 'script-src-elem')
     directives.forEach((directive, index) => {
-      const trimmed = directive.trim()
-      if (trimmed.startsWith('script-src') || trimmed.startsWith('default-src')) {
+      const name = names[index]
+      if (name === 'script-src' || name === 'script-src-elem' ||
+        (name === 'default-src' && !elementScoped)) {
         restricted.push({ directives, index, rewritten: index === rewrittenIndex[valueIndex] })
       }
     })

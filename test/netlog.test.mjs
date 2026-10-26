@@ -446,6 +446,37 @@ describe('CSP replay-nonce seeding', () => {
     assert.deepStrictEqual(cspValues(requests['https://example.com/d'][0]), ["img-src 'none'"])
   })
 
+  it('leaves a policy whose script-src already admits inline scripts untouched', () => {
+    // Seeding the script-src would revoke its 'unsafe-inline' (a nonce makes
+    // browsers ignore it), blocking the site's own inline scripts on replay
+    // that ran during recording; and script-src-attr never applies to wpr's
+    // injected element, so it must not trigger seeding either.
+    const archive = build([
+      exchange([['Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'"]], { path: '/a' }),
+      exchange([['Content-Security-Policy', "script-src 'self' 'unsafe-inline'; script-src-attr 'none'"]], { path: '/b' })
+    ])
+    const requests = archive.Requests['example.com']
+    assert.deepStrictEqual(cspValues(requests['https://example.com/a'][0]), ["default-src 'self'; script-src 'self' 'unsafe-inline'"])
+    assert.deepStrictEqual(cspValues(requests['https://example.com/b'][0]), ["script-src 'self' 'unsafe-inline'; script-src-attr 'none'"])
+  })
+
+  it('seeds an unsafe-inline policy only when another enforced policy blocks inline scripts', () => {
+    // The blocking default-src needs the nonce (wpr would otherwise relax it
+    // with 'unsafe-inline'), and the tag nonce is read from the first
+    // script-governing directive; the conjunction blocked inline scripts at
+    // record time already, so narrowing the unsafe-inline policy is neutral.
+    const archive = build([exchange([
+      ['Content-Security-Policy', "script-src 'self' 'unsafe-inline'"],
+      ['Content-Security-Policy', "default-src 'self'"]
+    ])])
+    const [first, second] = cspValues(archive.Requests['example.com']['https://example.com/'][0])
+    const firstMatch = /^script-src 'nonce-([^']+)' 'self' 'unsafe-inline'$/.exec(first)
+    const secondMatch = /^default-src 'nonce-([^']+)' 'self'$/.exec(second)
+    assert.notStrictEqual(firstMatch, null, first)
+    assert.notStrictEqual(secondMatch, null, second)
+    assert.strictEqual(firstMatch[1], secondMatch[1])
+  })
+
   it('leaves non-HTML and non-200 responses untouched', () => {
     const archive = build([
       exchange([['Content-Security-Policy', "script-src 'self'"]], { path: '/json', contentType: 'application/json' }),

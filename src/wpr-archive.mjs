@@ -105,11 +105,15 @@ const chunkedBody = (body) => {
 
 /**
  * How the serialized response delimits its body (mirrors Go's resp.Write):
- * 'length' declares Content-Length; 'chunked' re-frames the de-chunked body
- * with Transfer-Encoding: chunked; 'close' is an h2 response with unknown
- * length, delimited by Connection: close; 'eof' is an h1 response with
- * unknown length, downgraded to HTTP/1.0; 'none' is a known zero length,
- * which serializes no framing header.
+ * 'chunked' re-frames the de-chunked body with Transfer-Encoding: chunked and
+ * takes priority over a logged Content-Length (Chromium and Go's
+ * http.ReadResponse both frame by Transfer-Encoding when a response carries
+ * both); 'length' declares Content-Length; 'close' is an h2 response with
+ * unknown length, delimited by Connection: close; 'eof' is an h1 response
+ * with unknown length, also delimited by Connection: close (Go sets Close
+ * and keeps the logged HTTP/1.x version); 'none' is a known zero length
+ * (Content-Length: 0 on a body-allowed status) or a no-body status such as
+ * 204/304, which serializes no framing header.
  * @typedef {{ kind: 'length', length: number } | { kind: 'chunked' } | { kind: 'close' } | { kind: 'eof' } | { kind: 'none' }} ResponseFraming
  */
 
@@ -127,21 +131,31 @@ const declaredResponseLength = (exchange) => {
 
 /** @returns {ResponseFraming} */
 const responseFraming = (exchange) => {
+  if (exchange.responseChunked) return { kind: 'chunked' }
   const length = declaredResponseLength(exchange)
   if (length !== null && length > 0) return { kind: 'length', length }
-  if (exchange.responseChunked) return { kind: 'chunked' }
-  if (length === null) return exchange.isHttp1 ? { kind: 'eof' } : { kind: 'close' }
+  if (length === null) {
+    // An unknown length only delimits a body on a body-allowed status: wpr's
+    // Go ReadResponse gives no-body statuses (HEAD/204/304) a zero length and
+    // Close=false, so they serialize without any framing header.
+    if (!expectsResponseBody(exchange)) return { kind: 'none' }
+    return exchange.isHttp1 ? { kind: 'eof' } : { kind: 'close' }
+  }
   return { kind: 'none' }
 }
 
 /** @param {ResponseFraming} framing @returns {string|null} */
-const framingHeader = (framing) => {
+const framingHeader = (framing, exchange) => {
   switch (framing.kind) {
     case 'length': return `Content-Length: ${framing.length}`
     case 'chunked': return 'Transfer-Encoding: chunked'
     case 'close': return 'Connection: close'
-    case 'eof':
-    case 'none': return null
+    // Go marks an EOF-delimited body by setting Close: the status line keeps
+    // its logged HTTP/1.x version and resp.Write emits Connection: close.
+    case 'eof': return 'Connection: close'
+    // A known zero length on a body-allowed status writes Content-Length: 0;
+    // no-body statuses carry no framing header at all.
+    case 'none': return expectsResponseBody(exchange) ? 'Content-Length: 0' : null
   }
 }
 
@@ -182,12 +196,9 @@ const serializeResponse = (exchange) => {
   const framing = responseFraming(exchange)
   let statusLine
   if (exchange.isHttp1) {
-    // HTTP/1.x: keep the logged status line
+    // HTTP/1.x: keep the logged status line (Go does not downgrade
+    // EOF-delimited responses to HTTP/1.0; it sets Close instead)
     statusLine = exchange.responseStatusLine ?? ''
-    if (framing.kind === 'eof') {
-      // Go downgrades EOF-delimited HTTP/1.x responses to HTTP/1.0
-      statusLine = statusLine.replace(/^HTTP\/1\.1/, 'HTTP/1.0')
-    }
   } else {
     // Go's h2 transport builds resp.Status from the raw :status pseudo-header
     // value plus " " + StatusText(code) ("599 " for an unknown code), and
@@ -199,11 +210,13 @@ const serializeResponse = (exchange) => {
     statusLine = `HTTP/2.0 ${exchange.responseCode} ${reason ?? ''}`
   }
   const lines = [statusLine]
-  const framingHeaderValue = framingHeader(framing)
+  const framingHeaderValue = framingHeader(framing, exchange)
   if (framingHeaderValue !== null) lines.push(framingHeaderValue)
   lines.push(...sortedHeaderLines(exchange.responseEntries))
   const head = Buffer.from(`${lines.join('\r\n')}\r\n\r\n`)
-  if (exchange.responseChunked) {
+  // The body framing follows the same kind the head was built from: a chunked
+  // response is re-chunked even when a Content-Length was also logged.
+  if (framing.kind === 'chunked') {
     // Re-frame the de-chunked body exactly like Go's resp.Write
     return Buffer.concat([head, chunkedBody(exchange.responseBody)])
   }

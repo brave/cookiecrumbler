@@ -184,6 +184,95 @@ describe('netlog to WprGo archive conversion', () => {
     ].join('\r\n'))
   })
 
+  it('re-chunks a chunked response that also logs a Content-Length', () => {
+    // Such responses exist on the wire and Chromium accepts them, with the
+    // chunked framing taking priority over the Content-Length; a head that
+    // declares the length over a chunked body would corrupt the archive.
+    const archive = archiveFromExchanges([makeExchange({
+      url: 'https://example.com/stream',
+      path: '/stream',
+      userAgent: null,
+      responseEntries: [['Content-Type', 'text/event-stream']],
+      responseChunked: true,
+      responseContentLength: 5,
+      responseBody: Buffer.from('hello')
+    })], new Map())
+    const response = Buffer.from(archive.Requests['example.com']['https://example.com/stream'][0].SerializedResponse, 'base64').toString('latin1')
+    assert.strictEqual(response, [
+      'HTTP/1.1 200 OK',
+      'Transfer-Encoding: chunked',
+      'Content-Type: text/event-stream',
+      '',
+      '5\r\nhello\r\n0\r\n\r\n'
+    ].join('\r\n'))
+  })
+
+  it('delimits unknown-length h1 bodies with Connection: close like Go resp.Write', () => {
+    const archive = archiveFromExchanges([makeExchange({
+      url: 'https://example.com/eof',
+      path: '/eof',
+      userAgent: null,
+      responseContentLength: null,
+      responseEntries: [['Content-Type', 'text/plain']],
+      responseBody: Buffer.from('body')
+    })], new Map())
+    const response = Buffer.from(archive.Requests['example.com']['https://example.com/eof'][0].SerializedResponse, 'base64').toString('latin1')
+    assert.strictEqual(response, [
+      'HTTP/1.1 200 OK',
+      'Connection: close',
+      'Content-Type: text/plain',
+      '',
+      'body'
+    ].join('\r\n'))
+  })
+
+  it('declares Content-Length: 0 for a body-allowed zero-length response', () => {
+    const archive = archiveFromExchanges([makeExchange({
+      url: 'https://example.com/empty',
+      path: '/empty',
+      userAgent: null,
+      responseContentLength: 0,
+      responseEntries: [['Content-Type', 'text/plain']],
+      responseBody: Buffer.alloc(0)
+    })], new Map())
+    const response = Buffer.from(archive.Requests['example.com']['https://example.com/empty'][0].SerializedResponse, 'base64').toString('latin1')
+    assert.strictEqual(response, [
+      'HTTP/1.1 200 OK',
+      'Content-Length: 0',
+      'Content-Type: text/plain',
+      '',
+      ''
+    ].join('\r\n'))
+  })
+
+  it('writes no framing header for no-body statuses with unknown length', () => {
+    const archive = archiveFromExchanges([
+      makeExchange({
+        url: 'https://example.com/no-content',
+        path: '/no-content',
+        userAgent: null,
+        responseStatusLine: 'HTTP/1.1 204 No Content',
+        responseCode: 204,
+        responseContentLength: null,
+        responseEntries: [],
+        responseBody: Buffer.alloc(0)
+      }),
+      makeExchange({
+        url: 'https://example.com/not-modified',
+        path: '/not-modified',
+        userAgent: null,
+        responseStatusLine: 'HTTP/1.1 304 Not Modified',
+        responseCode: 304,
+        responseContentLength: null,
+        responseEntries: [],
+        responseBody: Buffer.alloc(0)
+      })
+    ], new Map())
+    const requests = archive.Requests['example.com']
+    assert.strictEqual(Buffer.from(requests['https://example.com/no-content'][0].SerializedResponse, 'base64').toString('latin1'), 'HTTP/1.1 204 No Content\r\n\r\n')
+    assert.strictEqual(Buffer.from(requests['https://example.com/not-modified'][0].SerializedResponse, 'base64').toString('latin1'), 'HTTP/1.1 304 Not Modified\r\n\r\n')
+  })
+
   it('serializes h2 status lines with Go\'s StatusText phrases', () => {
     const archive = archiveFromExchanges([
       makeExchange({

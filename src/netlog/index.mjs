@@ -162,6 +162,7 @@ export const buildExchangesFromNetLog = async (netlogPath, options = {}) => {
 
   // Reconstruct request/response pairs from URL_REQUEST sources
   const allHops = [] // surviving candidates across sources, in first-seen order
+  const h1Tasks = [] // every sent h1 hop, for socket body correlation
   const h2Tasks = [] // every sent h2 hop, for stream correlation
   for (const source of sources.values()) {
     if (source.type !== sourceType.URL_REQUEST) continue
@@ -240,17 +241,14 @@ export const buildExchangesFromNetLog = async (netlogPath, options = {}) => {
         }
         redirectTarget = null
         hops.push(hop)
-        // Every sent h2 request joins stream correlation, including hops that
-        // later fail or are filtered: their session header blocks must be
-        // consumed so later requests with identical headers bind to their own
-        // streams
-        if (!hop.isHttp1) {
-          h2Tasks.push({
-            requestKey: JSON.stringify(hop.requestHeaders),
-            sessions: jobs.get(boundJobId)?.sessions ?? [],
-            eventIndex: hop.eventIndex,
-            hop
-          })
+        // Every sent request joins body correlation, including hops that
+        // later fail or are filtered: their wire bytes or session header
+        // blocks must be consumed so later requests with identical headers
+        // bind to their own stream and body
+        if (hop.isHttp1) {
+          h1Tasks.push({ requestLine: hop.requestLine, jobId: boundJobId, eventIndex: hop.eventIndex, hop })
+        } else {
+          h2Tasks.push({ requestKey: JSON.stringify(hop.requestHeaders), jobId: boundJobId, eventIndex: hop.eventIndex, hop })
         }
       } else if (event.type === ET.readResponseHeaders && hop !== null) {
         // A missing header list is not a valid response; only a present list
@@ -271,11 +269,12 @@ export const buildExchangesFromNetLog = async (netlogPath, options = {}) => {
     allHops.push(...hops)
   }
 
-  // Bind the h2 request bodies to their streams before filtering the hops:
+  // Bind request bodies to their connections before filtering the hops:
   // a hop dropped for failing or being browser-internal was still sent, and
-  // its header block must be consumed so a later request with identical
-  // headers binds to its own stream and body
-  correlateH2RequestBodies(h2Tasks, h2Sessions)
+  // its wire bytes or session header block must be consumed so a later
+  // request with identical headers binds to its own stream and body
+  correlateH2RequestBodies(h2Tasks, h2Sessions, jobs)
+  correlateH1RequestBodies(h1Tasks, socketSentChunks, jobs)
 
   const exchanges = []
   for (const candidate of allHops) {
@@ -316,8 +315,8 @@ export const buildExchangesFromNetLog = async (netlogPath, options = {}) => {
       requestHeaders: candidate.requestHeaders,
       requestEntries: request.entries,
       requestContentLength: request.contentLength,
-      // h2 bodies were resolved during stream correlation; h1 bodies stay
-      // empty until the socket recovery below
+      // Request bodies were resolved during connection correlation, before
+      // the hops were filtered
       requestBody: candidate.requestBody ?? Buffer.alloc(0),
       responseStatusLine: response.statusLine,
       responseCode: response.code,
@@ -337,16 +336,13 @@ export const buildExchangesFromNetLog = async (netlogPath, options = {}) => {
   // Sources are iterated in first-seen order, so the hops collected above are
   // grouped per source rather than in time order; sorting by the send-headers
   // event position restores the chronological order the docstring promises
-  // and the keep-alive h1 body recovery below relies on
   exchanges.sort((a, b) => a.eventIndex - b.eventIndex)
 
-  // Recover request bodies from the bound connections
-  recoverH1RequestBodies(exchanges, socketSentChunks)
   return { exchanges, negotiatedProtocols: collectNegotiatedProtocols(exchanges) }
 }
 
 /**
- * HTTP/2 request body recovery: every sent hop's header block is matched
+ * HTTP/2 request body correlation: every sent hop's header block is matched
  * against the bound HTTP/2 session's SEND_HEADERS events (the logged header
  * lists are identical), yielding the stream id whose DATA frames carry the
  * body, stored on the hop. Tasks are processed in netlog order so that
@@ -354,10 +350,10 @@ export const buildExchangesFromNetLog = async (netlogPath, options = {}) => {
  * All sent hops participate — including ones that later fail or are filtered
  * out — so a surviving request can never bind to a dropped one's stream.
  */
-const correlateH2RequestBodies = (tasks, h2Sessions) => {
+const correlateH2RequestBodies = (tasks, h2Sessions, jobs) => {
   tasks.sort((a, b) => a.eventIndex - b.eventIndex)
   for (const task of tasks) {
-    for (const sessionId of task.sessions) {
+    for (const sessionId of jobs.get(task.jobId)?.sessions ?? []) {
       const session = h2Sessions.get(sessionId)
       if (session === undefined) continue
       const blockIndex = session.headerBlocks.findIndex(block => block.key === task.requestKey)
@@ -371,19 +367,23 @@ const correlateH2RequestBodies = (tasks, h2Sessions) => {
 }
 
 /**
- * HTTP/1.1 request body recovery: finds the request line in the plaintext
+ * HTTP/1.1 request body correlation: finds the request line in the plaintext
  * bytes written on the bound socket and slices out the body after the header
- * block. Keep-alive sockets are scanned with a monotonic cursor so that
- * repeated requests are attributed in the order they were sent.
+ * block, stored on the hop. Keep-alive sockets are scanned with a monotonic
+ * cursor so that repeated requests are attributed in the order they were
+ * sent. All sent hops participate — including ones that later fail or are
+ * filtered out — so a surviving request can never match a dropped one's wire
+ * bytes. A chunked request logs no content length, so the cursor stops at
+ * its header block and the chunked body bytes stay in the search window;
+ * harmless, because a request line cannot appear inside body bytes.
  */
-const recoverH1RequestBodies = (exchanges, socketSentChunks) => {
+const correlateH1RequestBodies = (tasks, socketSentChunks, jobs) => {
   const cursors = new Map() // socketId -> search offset
   const streams = new Map() // socketId -> concatenated plaintext, built once per socket
-  const tasks = exchanges
-    .filter(exchange => exchange.isHttp1)
-    .sort((a, b) => a.eventIndex - b.eventIndex)
-  for (const exchange of tasks) {
-    const socketId = exchange.boundSocketId
+  tasks.sort((a, b) => a.eventIndex - b.eventIndex)
+  for (const task of tasks) {
+    if (task.requestLine === null) continue
+    const socketId = jobs.get(task.jobId)?.socketId ?? null
     if (socketId === null) continue
     let stream = streams.get(socketId)
     if (stream === undefined && socketSentChunks.has(socketId)) {
@@ -391,8 +391,7 @@ const recoverH1RequestBodies = (exchanges, socketSentChunks) => {
     }
     if (stream === undefined) continue
     const cursor = cursors.get(socketId) ?? 0
-    const requestLine = Buffer.from(stripLineEnding(exchange.requestLine))
-    const lineIndex = stream.indexOf(requestLine, cursor)
+    const lineIndex = stream.indexOf(Buffer.from(task.requestLine), cursor)
     if (lineIndex === -1) continue
     const headEnd = stream.indexOf('\r\n\r\n', lineIndex)
     if (headEnd === -1) continue
@@ -401,7 +400,7 @@ const recoverH1RequestBodies = (exchanges, socketSentChunks) => {
       'content-length'
     )) ?? 0
     const bodyStart = headEnd + 4
-    exchange.requestBody = Buffer.from(stream.subarray(bodyStart, bodyStart + length))
+    task.hop.requestBody = Buffer.from(stream.subarray(bodyStart, bodyStart + length))
     cursors.set(socketId, bodyStart + length)
   }
 }

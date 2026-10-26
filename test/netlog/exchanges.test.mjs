@@ -322,6 +322,43 @@ describe('buildExchangesFromNetLog', () => {
     assert.strictEqual(exchanges[0].requestBody.toString(), 'ok-body')
   })
 
+  it('does not bind a surviving h1 request to a failed request with identical headers', async (t) => {
+    // Two identical POST /api requests share one keep-alive socket: the
+    // first fails after its response (net_error), the second succeeds. The
+    // failed hop never becomes an exchange, but its request bytes are on the
+    // wire: the cursor walk must consume them so the survivor matches its
+    // own body.
+    const line = 'POST /api HTTP/1.1\r\n'
+    const headers = ['Host: example.com', 'content-length: 5']
+    const sentSource = (sourceId, jobSourceId) => [
+      event(ST.URL_REQUEST, sourceId, ET.REQUEST_ALIVE, { url: 'http://example.com/api' }, PHASE.PHASE_BEGIN),
+      event(ST.URL_REQUEST, sourceId, ET.URL_REQUEST_START_JOB, { method: 'POST', url: 'http://example.com/api' }, PHASE.PHASE_BEGIN),
+      event(ST.HTTP_STREAM_JOB, jobSourceId, ET.HTTP_STREAM_REQUEST_PROTO, { proto: 'http/1.1' }),
+      event(ST.HTTP_STREAM_JOB, jobSourceId, ET.SOCKET_POOL_BOUND_TO_SOCKET, { source_dependency: { id: 902, type: ST.SOCKET } }),
+      event(ST.URL_REQUEST, sourceId, ET.HTTP_STREAM_REQUEST_BOUND_TO_JOB, { source_dependency: { id: jobSourceId, type: ST.HTTP_STREAM_JOB } }),
+      event(ST.URL_REQUEST, sourceId, ET.HTTP_TRANSACTION_SEND_REQUEST_HEADERS, { line, headers }),
+      event(ST.URL_REQUEST, sourceId, ET.HTTP_TRANSACTION_READ_RESPONSE_HEADERS, { headers: ['HTTP/1.1 200 OK'] })
+    ]
+    const events = [
+      // the first request fails after its response, its body was fully
+      // drained and the socket reused
+      ...sentSource(940, 941),
+      event(ST.URL_REQUEST, 940, ET.REQUEST_ALIVE, { net_error: -330 }, PHASE.PHASE_END),
+      // the identical second request on the same socket succeeds
+      ...sentSource(950, 951),
+      event(ST.SOCKET, 902, ET.SOCKET_BYTES_SENT, {
+        byte_count: 200,
+        bytes: Buffer.from(
+          'POST /api HTTP/1.1\r\nHost: example.com\r\ncontent-length: 5\r\n\r\nAAAAA' +
+          'POST /api HTTP/1.1\r\nHost: example.com\r\ncontent-length: 5\r\n\r\nBBBBB'
+        ).toString('base64')
+      })
+    ]
+    const { exchanges } = await buildExchangesFromNetLog(await writeNetlog(t, events))
+    assert.strictEqual(exchanges.length, 1)
+    assert.strictEqual(exchanges[0].requestBody.toString(), 'BBBBB')
+  })
+
   it('splits redirect hops into one exchange per URL', async (t) => {
     const firstUrl = 'http://example.com/redirect-me'
     const secondUrl = 'http://example.com/finally'

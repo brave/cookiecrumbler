@@ -305,7 +305,9 @@ export const buildExchangesFromNetLog = async (netlogPath, options = {}) => {
     }
     const job = candidate.boundJobId === null ? null : jobs.get(candidate.boundJobId) ?? null
     if (candidate.isHttp1 && request.chunked) {
-      console.warn(`Skipping body of ${candidate.url}: chunked HTTP/1 request bodies are not recovered`)
+      // Backstop for requests whose wire bytes the walk never saw (no
+      // captured socket traffic): same rejection as the walk
+      throw new NetLogError(`unexpected chunked HTTP/1 request body on ${candidate.url}: streamed uploads are not supported`)
     }
     exchanges.push({
       url: candidate.url,
@@ -376,9 +378,10 @@ const correlateH2RequestBodies = (tasks, h2Sessions, jobs) => {
  * cursor so that repeated requests are attributed in the order they were
  * sent. All sent hops participate — including ones that later fail or are
  * filtered out — so a surviving request can never match a dropped one's wire
- * bytes. A chunked request logs no content length, so the cursor stops at
- * its header block and the chunked body bytes stay in the search window;
- * harmless, because a request line cannot appear inside body bytes.
+ * bytes. A chunked request (a streamed upload) has no determinable body
+ * boundary, so it is rejected: page-load traffic does not stream request
+ * bodies, and the upload bytes could otherwise be attributed to a later
+ * request on the same socket.
  */
 const correlateH1RequestBodies = (tasks, socketSentChunks, jobs) => {
   const cursors = new Map() // socketId -> search offset
@@ -398,10 +401,11 @@ const correlateH1RequestBodies = (tasks, socketSentChunks, jobs) => {
     if (lineIndex === -1) continue
     const headEnd = stream.indexOf('\r\n\r\n', lineIndex)
     if (headEnd === -1) continue
-    const length = parseContentLength(headerValue(
-      stream.toString('latin1', lineIndex, headEnd).split('\r\n'),
-      'content-length'
-    )) ?? 0
+    const head = stream.toString('latin1', lineIndex, headEnd).split('\r\n')
+    if (headerValue(head, 'transfer-encoding')?.includes('chunked')) {
+      throw new NetLogError(`unexpected chunked HTTP/1 request body on ${task.hop.url}: streamed uploads are not supported`)
+    }
+    const length = parseContentLength(headerValue(head, 'content-length')) ?? 0
     const bodyStart = headEnd + 4
     task.hop.requestBody = Buffer.from(stream.subarray(bodyStart, bodyStart + length))
     cursors.set(socketId, bodyStart + length)

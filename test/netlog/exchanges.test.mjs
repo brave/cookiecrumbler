@@ -471,13 +471,17 @@ describe('buildExchangesFromNetLog', () => {
     assert.deepStrictEqual(exchanges.map(e => e.url), [pageUrl])
   })
 
-  it('keeps chunked-request h1 exchanges but recovers no body', async (t) => {
-    const warn = t.mock.method(console, 'warn', () => {})
+  it('throws on a chunked h1 request (a streamed upload)', async (t) => {
+    // Page-load traffic does not stream request bodies: a chunked request is
+    // rejected outright instead of being kept with a body that cannot be
+    // recovered, or seeing its upload bytes attributed to later requests on
+    // the same socket
     const url = 'http://example.com/streamed-upload'
     const events = [
-      event(ST.URL_REQUEST, 700, ET.REQUEST_ALIVE, { url }),
-      event(ST.URL_REQUEST, 700, ET.URL_REQUEST_START_JOB, { method: 'POST', url }),
+      event(ST.URL_REQUEST, 700, ET.REQUEST_ALIVE, { url }, PHASE.PHASE_BEGIN),
+      event(ST.URL_REQUEST, 700, ET.URL_REQUEST_START_JOB, { method: 'POST', url }, PHASE.PHASE_BEGIN),
       event(ST.HTTP_STREAM_JOB, 701, ET.HTTP_STREAM_REQUEST_PROTO, { proto: 'http/1.1' }),
+      event(ST.HTTP_STREAM_JOB, 701, ET.SOCKET_POOL_BOUND_TO_SOCKET, { source_dependency: { id: 702, type: ST.SOCKET } }),
       event(ST.URL_REQUEST, 700, ET.HTTP_STREAM_REQUEST_BOUND_TO_JOB, { source_dependency: { id: 701, type: ST.HTTP_STREAM_JOB } }),
       event(ST.URL_REQUEST, 700, ET.HTTP_TRANSACTION_SEND_REQUEST_HEADERS, {
         line: 'POST /streamed-upload HTTP/1.1\r\n',
@@ -489,11 +493,57 @@ describe('buildExchangesFromNetLog', () => {
         bytes: Buffer.from('POST /streamed-upload HTTP/1.1\r\nHost: example.com\r\ntransfer-encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n').toString('base64')
       })
     ]
-    const { exchanges } = await buildExchangesFromNetLog(await writeNetlog(t, events))
-    assert.strictEqual(exchanges.length, 1)
-    assert.strictEqual(exchanges[0].url, url)
-    assert.strictEqual(exchanges[0].requestBody.length, 0)
-    assert.match(warn.mock.calls[0]?.arguments[0] ?? '', /chunked HTTP\/1 request bodies are not recovered/)
+    const netlogPath = await writeNetlog(t, events)
+    await assert.rejects(buildExchangesFromNetLog(netlogPath), {
+      name: 'NetLogError',
+      message: 'unexpected chunked HTTP/1 request body on http://example.com/streamed-upload: streamed uploads are not supported'
+    })
+  })
+
+  it('throws on a chunked h1 request whose wire bytes were not captured', async (t) => {
+    // The socket-level walk only sees captured wire bytes; the exchange
+    // construction rejects the same request from the logged headers
+    const url = 'http://example.com/streamed-upload'
+    const events = [
+      event(ST.URL_REQUEST, 700, ET.REQUEST_ALIVE, { url }, PHASE.PHASE_BEGIN),
+      event(ST.URL_REQUEST, 700, ET.URL_REQUEST_START_JOB, { method: 'POST', url }, PHASE.PHASE_BEGIN),
+      event(ST.HTTP_STREAM_JOB, 701, ET.HTTP_STREAM_REQUEST_PROTO, { proto: 'http/1.1' }),
+      event(ST.URL_REQUEST, 700, ET.HTTP_STREAM_REQUEST_BOUND_TO_JOB, { source_dependency: { id: 701, type: ST.HTTP_STREAM_JOB } }),
+      event(ST.URL_REQUEST, 700, ET.HTTP_TRANSACTION_SEND_REQUEST_HEADERS, {
+        line: 'POST /streamed-upload HTTP/1.1\r\n',
+        headers: ['Host: example.com', 'transfer-encoding: chunked']
+      }),
+      event(ST.URL_REQUEST, 700, ET.HTTP_TRANSACTION_READ_RESPONSE_HEADERS, { headers: ['HTTP/1.1 200 OK'] })
+    ]
+    const netlogPath = await writeNetlog(t, events)
+    await assert.rejects(buildExchangesFromNetLog(netlogPath), {
+      name: 'NetLogError',
+      message: 'unexpected chunked HTTP/1 request body on http://example.com/streamed-upload: streamed uploads are not supported'
+    })
+  })
+
+  it('throws on a chunked h1 request even when it would be filtered as browser-internal', async (t) => {
+    const url = 'https://localhost.invalid/upload'
+    const events = [
+      event(ST.URL_REQUEST, 710, ET.REQUEST_ALIVE, { url }, PHASE.PHASE_BEGIN),
+      event(ST.URL_REQUEST, 710, ET.URL_REQUEST_START_JOB, { method: 'POST', url, network_isolation_key: 'null null' }, PHASE.PHASE_BEGIN),
+      event(ST.HTTP_STREAM_JOB, 711, ET.HTTP_STREAM_REQUEST_PROTO, { proto: 'http/1.1' }),
+      event(ST.HTTP_STREAM_JOB, 711, ET.SOCKET_POOL_BOUND_TO_SOCKET, { source_dependency: { id: 712, type: ST.SOCKET } }),
+      event(ST.URL_REQUEST, 710, ET.HTTP_STREAM_REQUEST_BOUND_TO_JOB, { source_dependency: { id: 711, type: ST.HTTP_STREAM_JOB } }),
+      event(ST.URL_REQUEST, 710, ET.HTTP_TRANSACTION_SEND_REQUEST_HEADERS, {
+        line: 'POST /upload HTTP/1.1\r\n',
+        headers: ['Host: localhost.invalid', 'transfer-encoding: chunked']
+      }),
+      event(ST.SOCKET, 712, ET.SOCKET_BYTES_SENT, {
+        byte_count: 56,
+        bytes: Buffer.from('POST /upload HTTP/1.1\r\nHost: localhost.invalid\r\ntransfer-encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n').toString('base64')
+      })
+    ]
+    const netlogPath = await writeNetlog(t, events)
+    await assert.rejects(buildExchangesFromNetLog(netlogPath), {
+      name: 'NetLogError',
+      message: 'unexpected chunked HTTP/1 request body on https://localhost.invalid/upload: streamed uploads are not supported'
+    })
   })
 
   it('throws when the netlog carries no constants', async (t) => {

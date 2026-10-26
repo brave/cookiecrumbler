@@ -164,14 +164,12 @@ settings:
 
 overrides:
   '@puppeteer/browsers': 3.2.1
-  brace-expansion@<1.1.19: ^1.1.19
-  brace-expansion@<1.1.20: ^1.1.20
   brace-expansion@<1.1.21: ^1.1.21
-  brace-expansion@>=4.0.0 <5.0.10: ^5.0.10
-  brace-expansion@>=4.0.0 <5.0.11: ^5.0.11
   brace-expansion@>=4.0.0 <5.0.12: ^5.0.12
-  ip-address@<=10.7.0: ^10.7.1
+  ip-address@<=10.7.3: ^10.7.4
   js-yaml@>=4.0.0 <4.3.2: ^4.3.2
+  undici@>=6.5.0 <6.29.1: ^6.29.1
+  zod@<4.6.6: ^4.6.6
 
 importers:
 
@@ -203,7 +201,7 @@ importers:
         version: 5.2.2
       openai:
         specifier: ^6.0.0
-        version: 6.49.0(ws@8.21.3)(zod@3.25.76)
+        version: 6.49.0(ws@8.21.3)(zod@4.6.7)
       proxy-chain:
         specifier: ^3.0.0
         version: 3.0.1(supports-color@8.1.1)
@@ -1358,8 +1356,8 @@ packages:
   inherits@2.0.4:
     resolution: {integrity: sha512-k/vGaX4/Yla3WzyMCvTQOXYeIHvqOKtnqBduzTHpzpQZzAskKMhZ2K+EnBiSM9zGSoIFeMpXKxa4dYeZIQqewQ==}
 
-  ip-address@10.7.2:
-    resolution: {integrity: sha512-7H/2gFSIitxc0hG3nOI1glS8QLo/EHBFFLk8vEUjXY/xu0AdL8jZ9U1IzO2PUm0d2D/ofQcAifb0g6OBkt8U7w==}
+  ip-address@10.7.4:
+    resolution: {integrity: sha512-DWBMKyeM25D70nrIiTkgQth59/G+naKOTep6huF9j+GmeK3DMD60Zvxg5d5qQnz+38AHgou6ean2LECX+lrKDg==}
     engines: {node: '>= 12'}
 
   is-buffer@1.1.6:
@@ -1711,7 +1709,7 @@ packages:
       '@smithy/hash-node': '>=4.3.0 <5'
       '@smithy/signature-v4': '>=5.4.0 <6'
       ws: ^8.18.0
-      zod: ^3.25 || ^4.0
+      zod: ^4.6.6
     peerDependenciesMeta:
       '@aws-sdk/credential-provider-node':
         optional: true
@@ -2079,8 +2077,8 @@ packages:
   undici-types@8.9.0:
     resolution: {integrity: sha512-KTDyRTYX8sWmKXAikPHHSyc63CRPETMctyjKFupcC6OBLXT3xsN0e9aF7m+mIXutFWpUXuedtowG7iLOzp0kQg==}
 
-  undici@6.28.1:
-    resolution: {integrity: sha512-zWpdTVD54H48CIybL0rWQ3ukpb9d23wM7eH5RtfdmeP70cWHNjtfo7P4vZX+5CoDcO53J4Pu5uXp7lNfjc6DRA==}
+  undici@6.29.1:
+    resolution: {integrity: sha512-EvRlUt/QqAEvXdQeRMYUfwOQsfzpDztykrG2owGEE/rBOBoYv9uF39ZzsNDh4lTFHhTr2XOZjKkYgueD12ZmGA==}
     engines: {node: '>=18.17'}
 
   unicorn-magic@0.3.0:
@@ -2195,8 +2193,8 @@ packages:
     resolution: {integrity: sha512-4LCcse/U2MHZ63HAJVE+v71o7yOdIe4cZ70Wpf8D/IyjDKYQLV5GD46B+hSTjJsvV5PztjvHoU580EftxjDZFQ==}
     engines: {node: '>=12.20'}
 
-  zod@3.25.76:
-    resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
+  zod@4.6.7:
+    resolution: {integrity: sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg==}
 
   zwitch@2.0.4:
     resolution: {integrity: sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A==}
@@ -2215,7 +2213,7 @@ snapshots:
   '@actions/http-client@4.0.1':
     dependencies:
       tunnel: 0.0.6
-      undici: 6.28.1
+      undici: 6.29.1
 
   '@actions/io@3.0.2': {}
 
@@ -2726,7 +2724,7 @@ snapshots:
     dependencies:
       devtools-protocol: 0.0.1495869
       mitt: 3.0.1
-      zod: 3.25.76
+      zod: 4.6.7
 
   cliui@8.0.1:
     dependencies:
@@ -3254,7 +3252,7 @@ snapshots:
 
   inherits@2.0.4: {}
 
-  ip-address@10.7.2: {}
+  ip-address@10.7.4: {}
 
   is-buffer@1.1.6: {}
 
@@ -3476,10 +3474,10 @@ snapshots:
     dependencies:
       wrappy: 1.0.2
 
-  openai@6.49.0(ws@8.21.3)(zod@3.25.76):
+  openai@6.49.0(ws@8.21.3)(zod@4.6.7):
     optionalDependencies:
       ws: 8.21.3
-      zod: 3.25.76
+      zod: 4.6.7
 
   optionator@0.9.4:
     dependencies:
@@ -3741,7 +3739,7 @@ snapshots:
 
   socks@2.8.10:
     dependencies:
-      ip-address: 10.7.2
+      ip-address: 10.7.4
       smart-buffer: 4.2.0
 
   source-map@0.8.0: {}
@@ -3855,7 +3853,7 @@ snapshots:
 
   undici-types@8.9.0: {}
 
-  undici@6.28.1: {}
+  undici@6.29.1: {}
 
   unicorn-magic@0.3.0: {}
 
@@ -3972,6 +3970,6 @@ snapshots:
 
   yocto-queue@1.2.2: {}
 
-  zod@3.25.76: {}
+  zod@4.6.7: {}
 
   zwitch@2.0.4: {}

@@ -2,7 +2,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { readNetLog } from '../../src/netlog/reader.mjs'
-import { event, ST, writeNetlog, writeRawNetlog } from '../helpers/netlog-fixtures.mjs'
+import { event, fixtureConstants, ST, writeNetlog, writeRawNetlog } from '../helpers/netlog-fixtures.mjs'
 
 describe('readNetLog', () => {
   it('reads the legacy single-JSON format', async (t) => {
@@ -18,6 +18,28 @@ describe('readNetLog', () => {
     const netlogPath = await writeNetlog(t, events, { format: 'ndjson' })
     const netlog = await readNetLog(netlogPath)
     assert.deepStrictEqual(netlog.events, events)
+    assert.strictEqual(netlog.constants.logCaptureMode, 'Everything')
+  })
+
+  it('sniffs the NDJSON format past a leading BOM and whitespace', async (t) => {
+    // Browsers write neither, but hand-edited or piped files can carry them;
+    // without the skip the file falls through to the legacy path and fails
+    // with a confusing JSON parse error
+    const events = [event(ST.URL_REQUEST, 1, 2, { url: 'https://example.com/' })]
+    const netlogPath = await writeRawNetlog(t, '\uFEFF\n  ' + [
+      JSON.stringify({ type: 'constants', constants: fixtureConstants() }),
+      ...events.map(e => JSON.stringify({ type: 'event', event: e })),
+      JSON.stringify({ type: 'end' })
+    ].join('\n') + '\n', 'netlog.ndjson')
+    const netlog = await readNetLog(netlogPath)
+    assert.strictEqual(netlog.constants.logCaptureMode, 'Everything')
+    assert.deepStrictEqual(netlog.events, events)
+  })
+
+  it('parses a legacy netlog with a leading BOM', async (t) => {
+    const events = [event(ST.URL_REQUEST, 1, 2, { url: 'https://example.com/' })]
+    const netlogPath = await writeRawNetlog(t, '\uFEFF' + JSON.stringify({ constants: fixtureConstants(), events, polledData: [] }))
+    const netlog = await readNetLog(netlogPath)
     assert.strictEqual(netlog.constants.logCaptureMode, 'Everything')
   })
 

@@ -60,10 +60,11 @@ export const readNetLog = async (netlogPath, { maxNetlogBytes = NETLOG_CAP_BYTES
   }
   try {
     // Peek at the first bytes to tell the NDJSON format from the legacy
-    // single-JSON document
-    const head = Buffer.alloc(8) // '{"type":'
+    // single-JSON document; a BOM or whitespace before the marker is skipped,
+    // which browsers do not write but hand-edited or piped files can carry
+    const head = Buffer.alloc(32)
     const { bytesRead } = await handle.read(head, 0, head.length, 0)
-    if (head.subarray(0, bytesRead).toString('utf8') === '{"type":') {
+    if (head.subarray(0, bytesRead).toString('utf8').trimStart().startsWith('{"type":')) {
       return await readNdjsonEvents(handle)
     }
     // Legacy format: a single JSON document, which can only be parsed whole;
@@ -76,7 +77,7 @@ export const readNetLog = async (netlogPath, { maxNetlogBytes = NETLOG_CAP_BYTES
     }
     let netlog
     try {
-      netlog = /** @type {unknown} */ (JSON.parse(content))
+      netlog = /** @type {unknown} */ (JSON.parse(content.charCodeAt(0) === 0xFEFF ? content.slice(1) : content))
     } catch (error) {
       throw new NetLogError(`invalid netlog data: ${errorMessage(error)}`, { cause: error })
     }
@@ -112,7 +113,7 @@ const readNdjsonEvents = async (handle) => {
     const events = []
     for await (const line of lines) {
       if (line.trim() === '') continue
-      const entry = /** @type {unknown} */ (JSON.parse(line))
+      const entry = /** @type {unknown} */ (JSON.parse(line.charCodeAt(0) === 0xFEFF ? line.slice(1) : line))
       if (!isObject(entry)) continue
       if (entry.type === 'constants') {
         constants = entry.constants

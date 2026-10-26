@@ -6,7 +6,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { buildExchangesFromNetLog } from '../../src/netlog/index.mjs'
-import { ET, PHASE, ST, event, h2SentBytes, writeNetlog, writeRawNetlog } from '../helpers/netlog-fixtures.mjs'
+import { ET, fixtureConstants, PHASE, ST, event, h2SentBytes, writeNetlog, writeRawNetlog } from '../helpers/netlog-fixtures.mjs'
 
 describe('buildExchangesFromNetLog', () => {
   for (const format of ['json', 'ndjson']) {
@@ -501,6 +501,16 @@ describe('buildExchangesFromNetLog', () => {
     await assert.rejects(buildExchangesFromNetLog(netlogPath), {
       name: 'NetLogError',
       message: 'netlog is missing the event/source type or phase constants'
+    })
+  })
+
+  it('throws when the events contain a non-object entry', async (t) => {
+    // A null in the legacy events array must raise a NetLogError, not crash
+    // with a TypeError while reading the event's source
+    const netlogPath = await writeRawNetlog(t, JSON.stringify({ constants: fixtureConstants(), events: [null] }))
+    await assert.rejects(buildExchangesFromNetLog(netlogPath), {
+      name: 'NetLogError',
+      message: 'netlog events contain a non-object entry'
     })
   })
 })

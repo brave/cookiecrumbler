@@ -90,6 +90,9 @@ export const buildExchangesFromNetLog = async (netlogPath, options = {}) => {
   // position is the only cross-source time order the file provides.
   const sources = new Map() // sourceKey -> { key, type, events, eventIndices }
   for (const [eventIndex, event] of netlog.events.entries()) {
+    if (event === null || typeof event !== 'object' || Array.isArray(event)) {
+      throw new NetLogError('netlog events contain a non-object entry')
+    }
     const key = sourceKeyOf(event.source)
     if (key === null) continue
     let source = sources.get(key)
@@ -232,7 +235,7 @@ export const buildExchangesFromNetLog = async (netlogPath, options = {}) => {
           // Stripped once here; the request-line regex, body recovery and the
           // archive serializer all use the line without its CRLF
           requestLine: typeof params.line === 'string' ? stripLineEnding(params.line) : null,
-          requestHeaders: event.params.headers ?? [],
+          requestHeaders: params.headers ?? [],
           responseHeaders: null,
           rawChunks: [],
           filteredChunks: [],

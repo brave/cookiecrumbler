@@ -446,26 +446,42 @@ describe('buildExchangesFromNetLog', () => {
   it('filters browser-internal traffic via the network isolation key', async (t) => {
     const pageUrl = 'https://example.com/page'
     const events = [
-      event(ST.URL_REQUEST, 600, ET.REQUEST_ALIVE, { url: pageUrl }),
-      event(ST.URL_REQUEST, 600, ET.URL_REQUEST_START_JOB, { method: 'GET', url: pageUrl }),
+      event(ST.URL_REQUEST, 600, ET.REQUEST_ALIVE, { url: pageUrl }, PHASE.PHASE_BEGIN),
+      event(ST.URL_REQUEST, 600, ET.URL_REQUEST_START_JOB, { method: 'GET', url: pageUrl }, PHASE.PHASE_BEGIN),
       event(ST.URL_REQUEST, 600, ET.HTTP_TRANSACTION_HTTP2_SEND_REQUEST_HEADERS, {
         headers: [':method: GET', ':authority: example.com', ':scheme: https', ':path: /page']
       }),
       event(ST.URL_REQUEST, 600, ET.HTTP_TRANSACTION_READ_RESPONSE_HEADERS, { headers: ['HTTP/1.1 200'] }),
       // browser-internal: component-updater style request with no page frame
-      event(ST.URL_REQUEST, 601, ET.REQUEST_ALIVE, { url: 'https://localhost.invalid/' }),
-      event(ST.URL_REQUEST, 601, ET.URL_REQUEST_START_JOB, { method: 'POST', url: 'https://localhost.invalid/', network_isolation_key: 'null null' }),
+      event(ST.URL_REQUEST, 601, ET.REQUEST_ALIVE, { url: 'https://localhost.invalid/' }, PHASE.PHASE_BEGIN),
+      event(ST.URL_REQUEST, 601, ET.URL_REQUEST_START_JOB, { method: 'POST', url: 'https://localhost.invalid/', network_isolation_key: 'null null' }, PHASE.PHASE_BEGIN),
       event(ST.URL_REQUEST, 601, ET.HTTP_TRANSACTION_HTTP2_SEND_REQUEST_HEADERS, {
         headers: [':method: POST', ':authority: localhost.invalid', ':scheme: https', ':path: /']
       }),
       event(ST.URL_REQUEST, 601, ET.HTTP_TRANSACTION_READ_RESPONSE_HEADERS, { headers: ['HTTP/1.1 404'] }),
       // browser-internal with an 'internally' anonymization key variant
-      event(ST.URL_REQUEST, 602, ET.REQUEST_ALIVE, { url: 'https://safebrowsing.example.com/list' }),
-      event(ST.URL_REQUEST, 602, ET.URL_REQUEST_START_JOB, { method: 'GET', url: 'https://safebrowsing.example.com/list', network_anonymization_key: 'null [internally: ...]' }),
+      event(ST.URL_REQUEST, 602, ET.REQUEST_ALIVE, { url: 'https://safebrowsing.example.com/list' }, PHASE.PHASE_BEGIN),
+      event(ST.URL_REQUEST, 602, ET.URL_REQUEST_START_JOB, { method: 'GET', url: 'https://safebrowsing.example.com/list', network_anonymization_key: 'null [internally: ...]' }, PHASE.PHASE_BEGIN),
       event(ST.URL_REQUEST, 602, ET.HTTP_TRANSACTION_HTTP2_SEND_REQUEST_HEADERS, {
         headers: [':method: GET', ':authority: safebrowsing.example.com', ':scheme: https', ':path: /list']
       }),
-      event(ST.URL_REQUEST, 602, ET.HTTP_TRANSACTION_READ_RESPONSE_HEADERS, { headers: ['HTTP/1.1 200'] })
+      event(ST.URL_REQUEST, 602, ET.HTTP_TRANSACTION_READ_RESPONSE_HEADERS, { headers: ['HTTP/1.1 200'] }),
+      // browser-internal streamed upload: ignored before any wire-level
+      // parsing, so its chunked request body does not reject the capture
+      event(ST.URL_REQUEST, 603, ET.REQUEST_ALIVE, { url: 'https://localhost.invalid/upload' }, PHASE.PHASE_BEGIN),
+      event(ST.URL_REQUEST, 603, ET.URL_REQUEST_START_JOB, { method: 'POST', url: 'https://localhost.invalid/upload', network_isolation_key: 'null null' }, PHASE.PHASE_BEGIN),
+      event(ST.HTTP_STREAM_JOB, 613, ET.HTTP_STREAM_REQUEST_PROTO, { proto: 'http/1.1' }),
+      event(ST.HTTP_STREAM_JOB, 613, ET.SOCKET_POOL_BOUND_TO_SOCKET, { source_dependency: { id: 614, type: ST.SOCKET } }),
+      event(ST.URL_REQUEST, 603, ET.HTTP_STREAM_REQUEST_BOUND_TO_JOB, { source_dependency: { id: 613, type: ST.HTTP_STREAM_JOB } }),
+      event(ST.URL_REQUEST, 603, ET.HTTP_TRANSACTION_SEND_REQUEST_HEADERS, {
+        line: 'POST /upload HTTP/1.1\r\n',
+        headers: ['Host: localhost.invalid', 'transfer-encoding: chunked']
+      }),
+      event(ST.URL_REQUEST, 603, ET.HTTP_TRANSACTION_READ_RESPONSE_HEADERS, { headers: ['HTTP/1.1 200'] }),
+      event(ST.SOCKET, 614, ET.SOCKET_BYTES_SENT, {
+        byte_count: 56,
+        bytes: Buffer.from('POST /upload HTTP/1.1\r\nHost: localhost.invalid\r\ntransfer-encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n').toString('base64')
+      })
     ]
     const { exchanges } = await buildExchangesFromNetLog(await writeNetlog(t, events))
     assert.deepStrictEqual(exchanges.map(e => e.url), [pageUrl])
@@ -519,30 +535,6 @@ describe('buildExchangesFromNetLog', () => {
     await assert.rejects(buildExchangesFromNetLog(netlogPath), {
       name: 'NetLogError',
       message: 'unexpected chunked HTTP/1 request body on http://example.com/streamed-upload: streamed uploads are not supported'
-    })
-  })
-
-  it('throws on a chunked h1 request even when it would be filtered as browser-internal', async (t) => {
-    const url = 'https://localhost.invalid/upload'
-    const events = [
-      event(ST.URL_REQUEST, 710, ET.REQUEST_ALIVE, { url }, PHASE.PHASE_BEGIN),
-      event(ST.URL_REQUEST, 710, ET.URL_REQUEST_START_JOB, { method: 'POST', url, network_isolation_key: 'null null' }, PHASE.PHASE_BEGIN),
-      event(ST.HTTP_STREAM_JOB, 711, ET.HTTP_STREAM_REQUEST_PROTO, { proto: 'http/1.1' }),
-      event(ST.HTTP_STREAM_JOB, 711, ET.SOCKET_POOL_BOUND_TO_SOCKET, { source_dependency: { id: 712, type: ST.SOCKET } }),
-      event(ST.URL_REQUEST, 710, ET.HTTP_STREAM_REQUEST_BOUND_TO_JOB, { source_dependency: { id: 711, type: ST.HTTP_STREAM_JOB } }),
-      event(ST.URL_REQUEST, 710, ET.HTTP_TRANSACTION_SEND_REQUEST_HEADERS, {
-        line: 'POST /upload HTTP/1.1\r\n',
-        headers: ['Host: localhost.invalid', 'transfer-encoding: chunked']
-      }),
-      event(ST.SOCKET, 712, ET.SOCKET_BYTES_SENT, {
-        byte_count: 56,
-        bytes: Buffer.from('POST /upload HTTP/1.1\r\nHost: localhost.invalid\r\ntransfer-encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n').toString('base64')
-      })
-    ]
-    const netlogPath = await writeNetlog(t, events)
-    await assert.rejects(buildExchangesFromNetLog(netlogPath), {
-      name: 'NetLogError',
-      message: 'unexpected chunked HTTP/1 request body on https://localhost.invalid/upload: streamed uploads are not supported'
     })
   })
 

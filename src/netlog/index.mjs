@@ -244,14 +244,19 @@ export const buildExchangesFromNetLog = async (netlogPath, options = {}) => {
         }
         redirectTarget = null
         hops.push(hop)
-        // Every sent request joins body correlation, including hops that
-        // later fail or are filtered: their wire bytes or session header
-        // blocks must be consumed so later requests with identical headers
-        // bind to their own stream and body
-        if (hop.isHttp1) {
-          h1Tasks.push({ requestLine: hop.requestLine, jobId: boundJobId, eventIndex: hop.eventIndex, hop })
-        } else {
-          h2Tasks.push({ requestKey: JSON.stringify(hop.requestHeaders), jobId: boundJobId, eventIndex: hop.eventIndex, hop })
+        // Every sent request of this source joins body correlation, including
+        // hops that later fail: their wire bytes or session header blocks
+        // must be consumed so later requests with identical headers bind to
+        // their own stream and body. Browser-internal sources are excluded:
+        // their sockets and sessions are partitioned by network isolation
+        // key, so they can neither shadow page requests nor contribute
+        // bodies, and their traffic is ignored before any wire-level parsing.
+        if (!browserInternal) {
+          if (hop.isHttp1) {
+            h1Tasks.push({ requestLine: hop.requestLine, jobId: boundJobId, eventIndex: hop.eventIndex, hop })
+          } else {
+            h2Tasks.push({ requestKey: JSON.stringify(hop.requestHeaders), jobId: boundJobId, eventIndex: hop.eventIndex, hop })
+          }
         }
       } else if (event.type === ET.readResponseHeaders && hop !== null) {
         // A missing header list is not a valid response; only a present list
@@ -273,9 +278,9 @@ export const buildExchangesFromNetLog = async (netlogPath, options = {}) => {
   }
 
   // Bind request bodies to their connections before filtering the hops:
-  // a hop dropped for failing or being browser-internal was still sent, and
-  // its wire bytes or session header block must be consumed so a later
-  // request with identical headers binds to its own stream and body
+  // a hop dropped for failing was still sent, and its wire bytes or session
+  // header block must be consumed so a later request with identical headers
+  // binds to its own stream and body
   correlateH2RequestBodies(h2Tasks, h2Sessions, jobs)
   correlateH1RequestBodies(h1Tasks, socketSentChunks, jobs)
 
@@ -352,8 +357,8 @@ export const buildExchangesFromNetLog = async (netlogPath, options = {}) => {
  * lists are identical), yielding the stream id whose DATA frames carry the
  * body, stored on the hop. Tasks are processed in netlog order so that
  * identical requests consume stream ids in the order the requests were sent.
- * All sent hops participate — including ones that later fail or are filtered
- * out — so a surviving request can never bind to a dropped one's stream.
+ * All sent hops of page sources participate — including ones that later fail
+ * — so a surviving request can never bind to a dropped one's stream.
  */
 const correlateH2RequestBodies = (tasks, h2Sessions, jobs) => {
   tasks.sort((a, b) => a.eventIndex - b.eventIndex)
@@ -376,8 +381,8 @@ const correlateH2RequestBodies = (tasks, h2Sessions, jobs) => {
  * bytes written on the bound socket and slices out the body after the header
  * block, stored on the hop. Keep-alive sockets are scanned with a monotonic
  * cursor so that repeated requests are attributed in the order they were
- * sent. All sent hops participate — including ones that later fail or are
- * filtered out — so a surviving request can never match a dropped one's wire
+ * sent. All sent hops of page sources participate — including ones that
+ * later fail — so a surviving request can never match a dropped one's wire
  * bytes. A chunked request (a streamed upload) has no determinable body
  * boundary, so it is rejected: page-load traffic does not stream request
  * bodies, and the upload bytes could otherwise be attributed to a later

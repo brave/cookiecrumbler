@@ -174,14 +174,17 @@ export const buildExchangesFromNetLog = async (netlogPath, options = {}) => {
     const hops = []
     source.events.forEach((event, index) => {
       const params = event.params ?? {}
-      // Failure events on the source: net_error is logged "only on failure"
-      // (url_request.cc), mirroring the browser's own explicit error;
-      // cancellations are deliberately not logged as errors. The failure
-      // attaches to the in-flight hop: the hop whose request the failing job
-      // sent. A job start (BEGIN) seals the previous hop, so a completed
-      // redirect hop is immune to failures of the next job, which fails
-      // before its own request ever had headers.
-      if (hop !== null && typeof params.net_error === 'number' && params.net_error !== 0) {
+      // Failure events on the source: only the URL_REQUEST_START_JOB and
+      // REQUEST_ALIVE end events carry the job's result (net_error is logged
+      // there "only on failure"; cancellations are deliberately not logged as
+      // errors). Other events on the source can carry unrelated net_errors
+      // (e.g. HttpCache transactions log their own failures), so they are
+      // ignored. The failure attaches to the in-flight hop: the hop whose
+      // request the failing job sent. A job start (BEGIN) seals the previous
+      // hop, so a completed redirect hop is immune to failures of the next
+      // job, which fails before its own request ever had headers.
+      if (event.phase === PHASE_END && (event.type === ET.startJob || event.type === ET.requestAlive) &&
+        hop !== null && typeof params.net_error === 'number' && params.net_error !== 0) {
         hop.failed = true
       }
       if (event.type === ET.requestAlive) {
@@ -194,8 +197,14 @@ export const buildExchangesFromNetLog = async (netlogPath, options = {}) => {
         // (DNS, proxy or connection setup, ...) belong to the still
         // header-less job. The START_JOB end event never seals: in real
         // captures it fires once the response starts, after the response
-        // headers and before the body events.
-        if (event.phase === PHASE_BEGIN) hop = null
+        // headers and before the body events. The bound stream job resets
+        // with the hop: a destination hop without its own
+        // HTTP_STREAM_REQUEST_BOUND_TO_JOB must not inherit the previous
+        // hop's job (socket, sessions, negotiated protocol).
+        if (event.phase === PHASE_BEGIN) {
+          hop = null
+          boundJobId = null
+        }
         // Browser-internal traffic (updater, safebrowsing, telemetry, background
         // services) is issued outside any page frame: its network
         // isolation/anonymization key has no accountable frame site (verified in

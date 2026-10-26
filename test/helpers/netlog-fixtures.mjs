@@ -26,7 +26,10 @@ export const ET = {
   // Cache bookkeeping logged on URL_REQUEST sources before the transaction
   // sends its headers; the parser does not model it, but real captures are
   // full of events like this one, so tests use it to shift event positions
-  HTTP_CACHE_READ_DATA: 17
+  HTTP_CACHE_READ_DATA: 17,
+  // Cache bookkeeping logged after the response headers; like the other cache
+  // events it can carry its own net_error, unrelated to the request's outcome
+  HTTP_CACHE_WRITE_DATA: 18
 }
 export const ST = {
   URL_REQUEST: 1,

@@ -370,6 +370,24 @@ describe('buildExchangesFromNetLog', () => {
     ])
   })
 
+  it('ignores net_error events that are not the START_JOB or REQUEST_ALIVE end', async (t) => {
+    // HttpCache transactions log their own failures to the URL_REQUEST
+    // source: a cache write failure after the response arrived must not drop
+    // the good exchange.
+    const url = 'http://example.com/cached'
+    const events = [
+      event(ST.URL_REQUEST, 980, ET.REQUEST_ALIVE, { url }, PHASE.PHASE_BEGIN),
+      event(ST.URL_REQUEST, 980, ET.URL_REQUEST_START_JOB, { method: 'GET', url }, PHASE.PHASE_BEGIN),
+      event(ST.URL_REQUEST, 980, ET.HTTP_TRANSACTION_SEND_REQUEST_HEADERS, { line: 'GET /cached HTTP/1.1\r\n', headers: ['Host: example.com'] }),
+      event(ST.URL_REQUEST, 980, ET.HTTP_TRANSACTION_READ_RESPONSE_HEADERS, { headers: ['HTTP/1.1 200 OK'] }),
+      event(ST.URL_REQUEST, 980, ET.URL_REQUEST_JOB_FILTERED_BYTES_READ, { bytes: Buffer.from('body').toString('base64') }),
+      event(ST.URL_REQUEST, 980, ET.HTTP_CACHE_WRITE_DATA, { net_error: -2 }, PHASE.PHASE_END)
+    ]
+    const { exchanges } = await buildExchangesFromNetLog(await writeNetlog(t, events))
+    assert.strictEqual(exchanges.length, 1)
+    assert.strictEqual(exchanges[0].responseBody.toString(), 'body')
+  })
+
   it('orders exchanges chronologically, not by first-seen source', async (t) => {
     // Request B's source is created before request A's, but A's headers hit
     // the wire first (B was still resolving): the returned order follows the

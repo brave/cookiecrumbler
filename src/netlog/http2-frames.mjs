@@ -43,11 +43,12 @@ export const extractH2DataFrames = (bytes) => {
       truncated = true // incomplete trailing frame
       break
     }
-    if (type === FRAME_TYPE_DATA && length > 0) {
+    if (type === FRAME_TYPE_DATA) {
       let payload = bytes.subarray(payloadStart, payloadStart + length)
       if ((flags & FLAG_PADDED) !== 0) {
         // Pad length + its own byte must fit inside the payload
-        // (RFC 9113 §6.1); larger values are a protocol error
+        // (RFC 9113 §6.1); larger values are a protocol error. A zero-length
+        // payload has no room even for the pad length byte.
         const padLength = payload[0] ?? 0
         if (padLength + 1 > payload.length) {
           truncated = true
@@ -55,7 +56,8 @@ export const extractH2DataFrames = (bytes) => {
         }
         payload = payload.subarray(1, payload.length - padLength)
       }
-      // DATA on stream 0 is a protocol error (RFC 9113 §6.1): ignored
+      // DATA on stream 0 is a protocol error (RFC 9113 §6.1): ignored; empty
+      // payloads carry no body bytes
       if (streamId !== 0 && payload.length > 0) {
         let streamChunks = chunks.get(streamId)
         if (streamChunks === undefined) chunks.set(streamId, streamChunks = [])

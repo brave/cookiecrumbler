@@ -108,4 +108,24 @@ describe('extractH2DataFrames', () => {
     assert.strictEqual(parsed.dataByStream.get(1), undefined)
     assert.strictEqual(parsed.truncated, false)
   })
+
+  it('rejects a zero-length padded DATA frame as a protocol error', () => {
+    // PADDED requires a pad length byte (RFC 9113 §6.1); a zero-length
+    // payload has no room for it
+    const bytes = withPreface(frame(DATA, PADDED, 1, Buffer.alloc(0)))
+    const parsed = extractH2DataFrames(bytes)
+    assert.strictEqual(parsed.dataByStream.get(1), undefined)
+    assert.strictEqual(parsed.truncated, true)
+  })
+
+  it('accepts a zero-length padded DATA frame with an empty pad', () => {
+    const bytes = withPreface(
+      frame(DATA, PADDED, 2, Buffer.from([0])), // pad length 0, no data
+      frame(DATA, 0x0, 3, Buffer.from('ok'))
+    )
+    const parsed = extractH2DataFrames(bytes)
+    assert.strictEqual(parsed.dataByStream.get(2), undefined)
+    assert.ok(Buffer.from('ok').equals(parsed.dataByStream.get(3)))
+    assert.strictEqual(parsed.truncated, false)
+  })
 })

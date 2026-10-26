@@ -267,6 +267,15 @@ const cspHasSha = (directive) => cspDirectiveTokens(directive).some(token => /^'
  * the policy intact, so only the injected script gains permission and
  * CSP-blocked site scripts stay blocked on both sides of record/replay.
  *
+ * Seeding also stops wpr from relaxing script-src-attr rewrite targets:
+ * wpr's rewrite picks the first directive whose name starts with
+ * 'script-src', which matches script-src-attr, and a target carrying
+ * neither a nonce, a hash nor 'unsafe-inline' (typically 'none') gets
+ * 'unsafe-inline' appended at replay, un-blocking event handlers the
+ * recording had blocked. Seeding the replay nonce into such a target
+ * leaves wpr's rewrite idle, and since handler attributes can never carry
+ * a nonce, the policy keeps blocking handlers exactly as it did.
+ *
  * Seeding is permission-neutral for the site: the added nonce matches nothing
  * the site ships, and a directive that admits inline scripts via
  * 'unsafe-inline' keeps its original bytes unless another enforced policy
@@ -386,22 +395,49 @@ const seedCspReplayNonce = (exchange, nonce) => {
     if (cspHasUnsafeInline(directives[index])) return false
     return true
   })
-  if (!needsSeed) return exchange.responseEntries
 
-  seed(tagSource)
-  for (const entry of restricted) {
-    if (isTagSource(entry)) continue
-    const directive = entry.directives[entry.index]
-    if (cspFirstNonce(directive) !== '') {
-      seed(entry) // a foreign nonce would block the seeded tag; ours coexists
-    } else if (cspHasSha(directive) && entry.rewritten) {
-      continue // wpr appends its script hash here, authorizing the tag
-    } else if (!cspHasSha(directive) && cspHasUnsafeInline(directive)) {
-      continue // already admits any inline script, including wpr's
-    } else {
-      seed(entry) // wpr would relax it with 'unsafe-inline', or it blocks the tag
+  let changed = false
+  const seedTracked = (entry) => {
+    seed(entry)
+    changed = true
+  }
+  if (needsSeed) {
+    seedTracked(tagSource)
+    for (const entry of restricted) {
+      if (isTagSource(entry)) continue
+      const directive = entry.directives[entry.index]
+      if (cspFirstNonce(directive) !== '') {
+        seedTracked(entry) // a foreign nonce would block the seeded tag; ours coexists
+      } else if (cspHasSha(directive) && entry.rewritten) {
+        continue // wpr appends its script hash here, authorizing the tag
+      } else if (!cspHasSha(directive) && cspHasUnsafeInline(directive)) {
+        continue // already admits any inline script, including wpr's
+      } else {
+        seedTracked(entry) // wpr would relax it with 'unsafe-inline', or it blocks the tag
+      }
     }
   }
+
+  // wpr's rewrite target can itself be a script-src-attr directive (its name
+  // starts with 'script-src'): a target carrying neither a nonce, a hash nor
+  // 'unsafe-inline' would get 'unsafe-inline' appended at replay, un-blocking
+  // handlers the recording had blocked. Seed the replay nonce into such
+  // targets to leave wpr's rewrite idle — handler attributes can never carry
+  // a nonce, so the policy keeps blocking handlers exactly as before. This
+  // runs whether or not needsSeed: when the element directives already admit
+  // the tag, the attribute target is the only thing wpr would still relax.
+  // These directives don't govern the injected tag, so they are not part of
+  // restricted.
+  valueDirectives.forEach((directives, valueIndex) => {
+    const index = rewrittenIndex[valueIndex]
+    if (index === -1) return
+    const directive = directives[index]
+    if (directive.trim().split(/\s+/)[0] !== 'script-src-attr') return
+    if (cspFirstNonce(directive) !== '' || cspHasSha(directive) || cspHasUnsafeInline(directive)) return
+    seedTracked({ directives, index })
+  })
+
+  if (!changed) return exchange.responseEntries
 
   // Rebuild the entries: CSP values may have been rewritten, all other
   // entries (and their tuples) are reused as-is

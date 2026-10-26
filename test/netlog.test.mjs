@@ -633,6 +633,62 @@ describe('CSP replay-nonce seeding', () => {
     ])
   })
 
+  it('seeds a script-src-attr that wpr would relax into unsafe-inline', () => {
+    // wpr's rewrite picks the first directive starting with 'script-src',
+    // which matches script-src-attr: a target with neither nonce, hash nor
+    // 'unsafe-inline' (here 'none') would get 'unsafe-inline' appended at
+    // replay, running handlers the recording had blocked. Event-handler
+    // attributes can never carry a nonce, so seeding it blocks handlers
+    // exactly as before and leaves wpr's rewrite idle.
+    const archive = build([exchange([
+      ['Content-Security-Policy', "script-src-attr 'none'; script-src 'unsafe-inline'"]
+    ])])
+    const [csp] = cspValues(archive.Requests['example.com']['https://example.com/'][0])
+    const nonce = /^script-src-attr 'nonce-([^']+)'/.exec(csp)[1]
+    assert.deepStrictEqual(csp.split(';').map(directive => directive.trim()), [
+      `script-src-attr 'nonce-${nonce}'`,
+      "script-src 'unsafe-inline'"
+    ])
+  })
+
+  it('leaves a script-src-attr rewrite target that already admits handlers untouched', () => {
+    // wpr appends nothing to a target that already has 'unsafe-inline'
+    const archive = build([exchange([
+      ['Content-Security-Policy', "script-src-attr 'unsafe-inline'; script-src 'unsafe-inline'"]
+    ])])
+    assert.deepStrictEqual(cspValues(archive.Requests['example.com']['https://example.com/'][0]), ["script-src-attr 'unsafe-inline'; script-src 'unsafe-inline'"])
+  })
+
+  it('seeds only the policy whose rewrite target is a script-src-attr', () => {
+    const archive = build([exchange([
+      ['Content-Security-Policy', "script-src 'unsafe-inline'"],
+      ['Content-Security-Policy', "script-src-attr 'none'; script-src 'unsafe-inline'"]
+    ])])
+    const [first, second] = cspValues(archive.Requests['example.com']['https://example.com/'][0])
+    const nonce = /^script-src-attr 'nonce-([^']+)'/.exec(second)[1]
+    assert.strictEqual(first, "script-src 'unsafe-inline'")
+    assert.deepStrictEqual(second.split(';').map(directive => directive.trim()), [
+      `script-src-attr 'nonce-${nonce}'`,
+      "script-src 'unsafe-inline'"
+    ])
+  })
+
+  it('seeds a blocking policy with a script-src-attr rewrite target through needsSeed', () => {
+    // needsSeed is true (script-src 'self' blocks the injected tag), the
+    // rewrite target is the attribute directive and wpr's directive search
+    // picks it as tag source, so both directives get the same replay nonce
+    // and no handler copy is added
+    const archive = build([exchange([
+      ['Content-Security-Policy', "script-src-attr 'none'; script-src 'self'"]
+    ])])
+    const [csp] = cspValues(archive.Requests['example.com']['https://example.com/'][0])
+    const nonce = /^script-src-attr 'nonce-([^']+)'/.exec(csp)[1]
+    assert.deepStrictEqual(csp.split(';').map(directive => directive.trim()), [
+      `script-src-attr 'nonce-${nonce}'`,
+      `script-src 'nonce-${nonce}' 'self'`
+    ])
+  })
+
   it('leaves non-HTML and non-200 responses untouched', () => {
     const archive = build([
       exchange([['Content-Security-Policy', "script-src 'self'"]], { path: '/json', contentType: 'application/json' }),

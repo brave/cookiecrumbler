@@ -1,6 +1,6 @@
 // Reconstruction tests for src/netlog/index.mjs: synthetic netlog in, HTTP
 // exchanges out. The archive serialization of those exchanges is covered by
-// test/netlog.test.mjs (serializer PR).
+// test/netlog/wpr-archive.test.mjs (serializer PR).
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'

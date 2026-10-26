@@ -3,9 +3,9 @@ import assert from 'node:assert/strict'
 
 import {
   ET, ST, PHASE, event, h2SentBytes, writeNetlog, makeExchange, decodeRequest, decodeResponse
-} from './helpers/netlog-fixtures.mjs'
-import { replaceConstants } from '../src/deterministic.mjs'
-import { buildArchiveFromNetLog, archiveFromExchanges } from '../src/wpr-archive.mjs'
+} from '../helpers/netlog-fixtures.mjs'
+import { replaceConstants } from '../../src/deterministic.mjs'
+import { buildArchiveFromNetLog, archiveFromExchanges } from '../../src/wpr-archive.mjs'
 
 describe('netlog to WprGo archive conversion', () => {
   it('converts h2 request/response pairs into the wpr record format', async (t) => {

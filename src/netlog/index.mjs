@@ -154,7 +154,8 @@ export const buildExchangesFromNetLog = async (netlogPath, options = {}) => {
   }
 
   // Reconstruct request/response pairs from URL_REQUEST sources
-  const exchanges = []
+  const allHops = [] // surviving candidates across sources, in first-seen order
+  const h2Tasks = [] // every sent h2 hop, for stream correlation
   for (const source of sources.values()) {
     if (source.type !== sourceType.URL_REQUEST) continue
 
@@ -224,6 +225,18 @@ export const buildExchangesFromNetLog = async (netlogPath, options = {}) => {
         }
         redirectTarget = null
         hops.push(hop)
+        // Every sent h2 request joins stream correlation, including hops that
+        // later fail or are filtered: their session header blocks must be
+        // consumed so later requests with identical headers bind to their own
+        // streams
+        if (!hop.isHttp1) {
+          h2Tasks.push({
+            requestKey: JSON.stringify(hop.requestHeaders),
+            sessions: jobs.get(boundJobId)?.sessions ?? [],
+            eventIndex: hop.eventIndex,
+            hop
+          })
+        }
       } else if (event.type === ET.readResponseHeaders && hop !== null) {
         // A missing header list is not a valid response; only a present list
         // counts as a logged response
@@ -238,96 +251,105 @@ export const buildExchangesFromNetLog = async (netlogPath, options = {}) => {
     })
 
     // Browser-internal sources never contribute exchanges: skip them before
-    // iterating the hops
+    // collecting the hops
     if (browserInternal) continue
-    for (const candidate of hops) {
-      if (candidate.url === null || candidate.responseHeaders === null || candidate.failed) {
-        continue
-      }
-      const request = parseRequestHeaders(candidate.requestHeaders)
-      // An HTTP/1.x exchange that survives always has a non-null requestLine:
-      // its method can only come from the request line (there is no :method
-      // pseudo-header), and hops without a usable line are dropped below
-      if (candidate.isHttp1 && request.method === null) {
-        const line = parseRequestLine(candidate.requestLine ?? '')
-        if (line !== null) {
-          request.method = line.method
-          request.path = line.target
-        }
-      }
-      if (request.authority === null || request.method === null) {
-        continue
-      }
-      const response = parseResponseHeaders(candidate.responseHeaders)
-      if (response === null) {
-        console.warn(`Skipping ${candidate.url}: unparsable status line`)
-        continue
-      }
-      const job = candidate.boundJobId === null ? null : jobs.get(candidate.boundJobId) ?? null
-      if (candidate.isHttp1 && request.chunked) {
-        console.warn(`Skipping body of ${candidate.url}: chunked HTTP/1 request bodies are not recovered`)
-      }
-      exchanges.push({
-        url: candidate.url,
-        method: request.method,
-        path: request.path,
-        authority: request.authority,
-        userAgent: request.userAgent,
-        isHttp1: candidate.isHttp1,
-        requestLine: candidate.requestLine,
-        requestHeaders: candidate.requestHeaders,
-        requestEntries: request.entries,
-        requestContentLength: request.contentLength,
-        requestBody: Buffer.alloc(0),
-        responseStatusLine: response.statusLine,
-        responseCode: response.code,
-        responseEntries: response.entries,
-        responseContentLength: response.contentLength,
-        responseChunked: response.chunked,
-        // Raw chunks carry the still-content-encoded wire body; identity
-        // responses only log filtered chunks (identical to the wire bytes)
-        responseBody: Buffer.concat(candidate.rawChunks.length > 0 ? candidate.rawChunks : candidate.filteredChunks),
-        negotiatedProtocol: job?.protocol ?? null,
-        boundSessions: job?.sessions ?? [],
-        boundSocketId: job?.socketId ?? null,
-        eventIndex: candidate.eventIndex
-      })
-    }
+    allHops.push(...hops)
   }
 
-  // Sources are iterated in first-seen order, so the exchanges collected
-  // above are grouped per source rather than in time order; sorting by the
-  // send-headers event position restores the chronological order the
-  // docstring promises and the keep-alive body recovery below relies on
+  // Bind the h2 request bodies to their streams before filtering the hops:
+  // a hop dropped for failing or being browser-internal was still sent, and
+  // its header block must be consumed so a later request with identical
+  // headers binds to its own stream and body
+  correlateH2RequestBodies(h2Tasks, h2Sessions)
+
+  const exchanges = []
+  for (const candidate of allHops) {
+    if (candidate.url === null || candidate.responseHeaders === null || candidate.failed) {
+      continue
+    }
+    const request = parseRequestHeaders(candidate.requestHeaders)
+    // An HTTP/1.x exchange that survives always has a non-null requestLine:
+    // its method can only come from the request line (there is no :method
+    // pseudo-header), and hops without a usable line are dropped below
+    if (candidate.isHttp1 && request.method === null) {
+      const line = parseRequestLine(candidate.requestLine ?? '')
+      if (line !== null) {
+        request.method = line.method
+        request.path = line.target
+      }
+    }
+    if (request.authority === null || request.method === null) {
+      continue
+    }
+    const response = parseResponseHeaders(candidate.responseHeaders)
+    if (response === null) {
+      console.warn(`Skipping ${candidate.url}: unparsable status line`)
+      continue
+    }
+    const job = candidate.boundJobId === null ? null : jobs.get(candidate.boundJobId) ?? null
+    if (candidate.isHttp1 && request.chunked) {
+      console.warn(`Skipping body of ${candidate.url}: chunked HTTP/1 request bodies are not recovered`)
+    }
+    exchanges.push({
+      url: candidate.url,
+      method: request.method,
+      path: request.path,
+      authority: request.authority,
+      userAgent: request.userAgent,
+      isHttp1: candidate.isHttp1,
+      requestLine: candidate.requestLine,
+      requestHeaders: candidate.requestHeaders,
+      requestEntries: request.entries,
+      requestContentLength: request.contentLength,
+      // h2 bodies were resolved during stream correlation; h1 bodies stay
+      // empty until the socket recovery below
+      requestBody: candidate.requestBody ?? Buffer.alloc(0),
+      responseStatusLine: response.statusLine,
+      responseCode: response.code,
+      responseEntries: response.entries,
+      responseContentLength: response.contentLength,
+      responseChunked: response.chunked,
+      // Raw chunks carry the still-content-encoded wire body; identity
+      // responses only log filtered chunks (identical to the wire bytes)
+      responseBody: Buffer.concat(candidate.rawChunks.length > 0 ? candidate.rawChunks : candidate.filteredChunks),
+      negotiatedProtocol: job?.protocol ?? null,
+      boundSessions: job?.sessions ?? [],
+      boundSocketId: job?.socketId ?? null,
+      eventIndex: candidate.eventIndex
+    })
+  }
+
+  // Sources are iterated in first-seen order, so the hops collected above are
+  // grouped per source rather than in time order; sorting by the send-headers
+  // event position restores the chronological order the docstring promises
+  // and the keep-alive h1 body recovery below relies on
   exchanges.sort((a, b) => a.eventIndex - b.eventIndex)
 
   // Recover request bodies from the bound connections
-  recoverH2RequestBodies(exchanges, h2Sessions)
   recoverH1RequestBodies(exchanges, socketSentChunks)
   return { exchanges, negotiatedProtocols: collectNegotiatedProtocols(exchanges) }
 }
 
 /**
- * HTTP/2 request body recovery: each URL_REQUEST's header block is matched
+ * HTTP/2 request body recovery: every sent hop's header block is matched
  * against the bound HTTP/2 session's SEND_HEADERS events (the logged header
  * lists are identical), yielding the stream id whose DATA frames carry the
- * body. Tasks are processed in netlog order so that identical requests
- * consume stream ids in the order the requests were sent.
+ * body, stored on the hop. Tasks are processed in netlog order so that
+ * identical requests consume stream ids in the order the requests were sent.
+ * All sent hops participate — including ones that later fail or are filtered
+ * out — so a surviving request can never bind to a dropped one's stream.
  */
-const recoverH2RequestBodies = (exchanges, h2Sessions) => {
-  const tasks = exchanges
-    .filter(exchange => !exchange.isHttp1)
-    .sort((a, b) => a.eventIndex - b.eventIndex)
-  for (const exchange of tasks) {
-    const headerKey = JSON.stringify(exchange.requestHeaders)
-    for (const sessionId of exchange.boundSessions) {
+const correlateH2RequestBodies = (tasks, h2Sessions) => {
+  tasks.sort((a, b) => a.eventIndex - b.eventIndex)
+  for (const task of tasks) {
+    for (const sessionId of task.sessions) {
       const session = h2Sessions.get(sessionId)
       if (session === undefined) continue
-      const blockIndex = session.headerBlocks.findIndex(block => block.key === headerKey)
+      const blockIndex = session.headerBlocks.findIndex(block => block.key === task.requestKey)
       if (blockIndex === -1) continue
       const block = session.headerBlocks[blockIndex]
       session.headerBlocks.splice(blockIndex, 1)
-      exchange.requestBody = session.dataByStream.get(block.streamId) ?? Buffer.alloc(0)
+      task.hop.requestBody = session.dataByStream.get(block.streamId) ?? Buffer.alloc(0)
       break
     }
   }

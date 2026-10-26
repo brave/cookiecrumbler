@@ -240,6 +240,50 @@ describe('buildExchangesFromNetLog', () => {
     assert.deepStrictEqual(exchanges.map(e => e.url), ['http://example.com/redirect-me'])
   })
 
+  it('does not bind a surviving request to a failed stream with identical headers', async (t) => {
+    // Two identical-header POSTs share one session: the first stream fails
+    // (its URL_REQUEST logs net_error), the second succeeds. The failed hop
+    // never becomes an exchange, but its session header block must still be
+    // consumed so the survivor binds to its own stream and body.
+    const requestHeaders = [
+      ':method: POST',
+      ':authority: example.com',
+      ':scheme: https',
+      ':path: /collect',
+      'content-type: text/plain'
+    ]
+    const failedSource = (sourceId, jobSourceId) => [
+      event(ST.URL_REQUEST, sourceId, ET.REQUEST_ALIVE, { url: 'https://example.com/collect' }),
+      event(ST.URL_REQUEST, sourceId, ET.URL_REQUEST_START_JOB, { method: 'POST', url: 'https://example.com/collect' }),
+      event(ST.HTTP_STREAM_JOB, jobSourceId, ET.HTTP_STREAM_REQUEST_PROTO, { proto: 'h2' }),
+      event(ST.HTTP_STREAM_JOB, jobSourceId, ET.SOCKET_POOL_BOUND_TO_SOCKET, { source_dependency: { id: 902, type: ST.SOCKET } }),
+      event(ST.HTTP_STREAM_JOB, jobSourceId, ET.HTTP2_SESSION_POOL_IMPORTED_SESSION_FROM_SOCKET, { source_dependency: { id: 903, type: ST.HTTP2_SESSION } }),
+      event(ST.URL_REQUEST, sourceId, ET.HTTP_STREAM_REQUEST_BOUND_TO_JOB, { source_dependency: { id: jobSourceId, type: ST.HTTP_STREAM_JOB } }),
+      event(ST.URL_REQUEST, sourceId, ET.HTTP_TRANSACTION_HTTP2_SEND_REQUEST_HEADERS, { headers: requestHeaders })
+    ]
+    const events = [
+      // the request on stream 3 fails without a response
+      ...failedSource(920, 921),
+      event(ST.URL_REQUEST, 920, ET.REQUEST_ALIVE, { net_error: -324 }),
+      // the request on stream 5 succeeds, body differs from the failed one
+      ...failedSource(930, 931),
+      event(ST.URL_REQUEST, 930, ET.HTTP_TRANSACTION_READ_RESPONSE_HEADERS, { headers: ['HTTP/1.1 204'] }),
+      event(ST.SOCKET, 902, ET.SSL_SOCKET_BYTES_SENT, {
+        byte_count: 100,
+        bytes: Buffer.concat([
+          h2SentBytes(3, Buffer.from('failed-body')),
+          h2SentBytes(5, Buffer.from('ok-body'), { preface: false })
+        ]).toString('base64')
+      }),
+      event(ST.HTTP2_SESSION, 903, ET.HTTP2_SESSION_INITIALIZED, { protocol: 'h2', source_dependency: { id: 902, type: ST.SOCKET } }),
+      event(ST.HTTP2_SESSION, 903, ET.HTTP2_SESSION_SEND_HEADERS, { headers: requestHeaders, stream_id: 3 }),
+      event(ST.HTTP2_SESSION, 903, ET.HTTP2_SESSION_SEND_HEADERS, { headers: requestHeaders, stream_id: 5 })
+    ]
+    const { exchanges } = await buildExchangesFromNetLog(await writeNetlog(t, events))
+    assert.strictEqual(exchanges.length, 1)
+    assert.strictEqual(exchanges[0].requestBody.toString(), 'ok-body')
+  })
+
   it('splits redirect hops into one exchange per URL', async (t) => {
     const firstUrl = 'http://example.com/redirect-me'
     const secondUrl = 'http://example.com/finally'

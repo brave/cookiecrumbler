@@ -4,9 +4,11 @@
 // http.Request.Write output (request line, Host, User-Agent, Content-Length,
 // sorted headers, body) and SerializedResponse is Go's http.Response.Write
 // output (status line, Content-Length when known or Connection: close when
-// the length is unknown, sorted headers, still-content-encoded body). One
-// deliberate divergence: a Content-Length logged on a bodyless status is
-// kept, where Go's resp.Write would drop it (see declaredResponseLength).
+// the length is unknown, sorted headers, still-content-encoded body). Two
+// deliberate divergences: a Content-Length logged on a bodyless status is
+// kept, where Go's resp.Write would drop it (see declaredResponseLength), and
+// a handler-permitting seeded directive is mirrored into an explicit
+// script-src-attr, which wpr record archives without (see seedCspReplayNonce).
 // Before serialization, the Content-Security-Policy headers of HTML 200
 // responses are seeded with a replay nonce so that wpr's replay-time script
 // injection is authorized without wpr's 'unsafe-inline' fallback (see
@@ -271,6 +273,14 @@ const cspHasSha = (directive) => cspDirectiveTokens(directive).some(token => /^'
  * blocks arbitrary inline scripts anyway (wpr then needs the nonce from the
  * first script-governing directive to tag its script, and the conjunction
  * already blocked those scripts at record time).
+ *
+ * Seeding is permission-neutral for inline event handlers too: a seeded
+ * directive that is the handlers' fallback (script-src, or default-src where
+ * the policy has no script-src) and admitted them via 'unsafe-inline' is
+ * copied verbatim into an explicit script-src-attr appended to the policy,
+ * since the added nonce would otherwise disable 'unsafe-inline' for handlers
+ * (a nonce makes browsers ignore it). The copy is a deliberate byte
+ * divergence from wpr record, which archives no such directive.
  */
 const seedCspReplayNonce = (exchange, nonce) => {
   if (exchange.responseCode !== 200) return exchange.responseEntries
@@ -342,9 +352,29 @@ const seedCspReplayNonce = (exchange, nonce) => {
   const isTagSource = entry => entry.directives === tagSource.directives && entry.index === tagSource.index
   const nonceToken = `'nonce-${nonce}'`
   const seed = ({ directives, index }) => {
-    const kept = cspDirectiveTokens(directives[index]).filter(token => token !== "'none'")
+    const original = cspDirectiveTokens(directives[index])
+    const kept = original.filter(token => token !== "'none'")
     if (!kept.includes(nonceToken)) kept.splice(1, 0, nonceToken)
     directives[index] = kept.join(' ')
+    // Inline event handlers resolve script-src-attr to script-src (falling
+    // back to default-src), never to script-src-elem: when the seeded
+    // directive is that fallback and its 'unsafe-inline' admitted handlers at
+    // record time, the added nonce would disable it for them (a nonce makes
+    // browsers ignore 'unsafe-inline'). Copy the original directive verbatim
+    // into an explicit script-src-attr so handlers keep their recorded
+    // permission. When the original carries a nonce or a hash, or the policy
+    // already has a script-src-attr (which also guards a second copy),
+    // seeding never changes handler behavior and nothing is appended.
+    // Appending keeps the restricted indices valid; the copy is a deliberate
+    // byte divergence from wpr record.
+    const names = directives.map(directive => directive.trim().split(/\s+/)[0] ?? '')
+    const isHandlerFallback = original[0] === 'script-src' ||
+      (original[0] === 'default-src' && !names.includes('script-src'))
+    const revokesUnsafeInline = original.includes("'unsafe-inline'") &&
+      cspFirstNonce(original.join(' ')) === '' && !cspHasSha(original.join(' '))
+    if (isHandlerFallback && !names.includes('script-src-attr') && revokesUnsafeInline) {
+      directives.push(`script-src-attr ${original.slice(1).join(' ')}`)
+    }
   }
 
   // Seeding is needed when any directive would block wpr's injected script or

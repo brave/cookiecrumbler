@@ -580,11 +580,57 @@ describe('CSP replay-nonce seeding', () => {
       ['Content-Security-Policy', "default-src 'self'"]
     ])])
     const [first, second] = cspValues(archive.Requests['example.com']['https://example.com/'][0])
-    const firstMatch = /^script-src 'nonce-([^']+)' 'self' 'unsafe-inline'$/.exec(first)
+    // the seeded script-src is its policy's handler fallback and admitted
+    // handlers via 'unsafe-inline', so seeding mirrors it into an explicit
+    // script-src-attr; value2's default-src still blocks the handlers overall
+    const firstMatch = /^script-src 'nonce-([^']+)' 'self' 'unsafe-inline';script-src-attr 'self' 'unsafe-inline'$/.exec(first)
     const secondMatch = /^default-src 'nonce-([^']+)' 'self'$/.exec(second)
     assert.notStrictEqual(firstMatch, null, first)
     assert.notStrictEqual(secondMatch, null, second)
     assert.strictEqual(firstMatch[1], secondMatch[1])
+  })
+
+  it('keeps a handler fallback\'s unsafe-inline permission in an explicit script-src-attr', () => {
+    // Seeding script-src revokes its 'unsafe-inline' for handlers (a nonce
+    // makes browsers ignore it), so the original directive is mirrored into
+    // an explicit script-src-attr: onclick= handlers ran during recording and
+    // must keep running on replay. script-src-elem never governs handlers, so
+    // seeding it adds no copy.
+    const archive = build([exchange([
+      ['Content-Security-Policy', "script-src 'self' 'unsafe-inline'; script-src-elem 'self' 'nonce-abc'"]
+    ])])
+    const [csp] = cspValues(archive.Requests['example.com']['https://example.com/'][0])
+    const nonce = /^script-src 'nonce-([^']+)'/.exec(csp)[1]
+    assert.deepStrictEqual(csp.split(';').map(directive => directive.trim()), [
+      `script-src 'nonce-${nonce}' 'self' 'unsafe-inline'`,
+      `script-src-elem 'nonce-${nonce}' 'self' 'nonce-abc'`,
+      'script-src-attr \'self\' \'unsafe-inline\''
+    ])
+  })
+
+  it('leaves an existing script-src-attr untouched instead of appending a second one', () => {
+    const archive = build([exchange([
+      ['Content-Security-Policy', "script-src 'self' 'unsafe-inline'; script-src-elem 'self' 'nonce-abc'; script-src-attr 'self'"]
+    ])])
+    const [csp] = cspValues(archive.Requests['example.com']['https://example.com/'][0])
+    const nonce = /^script-src 'nonce-([^']+)'/.exec(csp)[1]
+    assert.deepStrictEqual(csp.split(';').map(directive => directive.trim()), [
+      `script-src 'nonce-${nonce}' 'self' 'unsafe-inline'`,
+      `script-src-elem 'nonce-${nonce}' 'self' 'nonce-abc'`,
+      "script-src-attr 'self'"
+    ])
+  })
+
+  it('adds no script-src-attr when the seeded fallback never admitted handlers', () => {
+    const archive = build([exchange([
+      ['Content-Security-Policy', "script-src 'self'; script-src-elem 'self' 'nonce-abc'"]
+    ])])
+    const [csp] = cspValues(archive.Requests['example.com']['https://example.com/'][0])
+    const nonce = /^script-src 'nonce-([^']+)'/.exec(csp)[1]
+    assert.deepStrictEqual(csp.split(';').map(directive => directive.trim()), [
+      `script-src 'nonce-${nonce}' 'self'`,
+      `script-src-elem 'nonce-${nonce}' 'self' 'nonce-abc'`
+    ])
   })
 
   it('leaves non-HTML and non-200 responses untouched', () => {

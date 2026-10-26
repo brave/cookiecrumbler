@@ -35,15 +35,29 @@ export const ST = {
   HTTP2_SESSION: 4
 }
 
+// Event phases are numeric in the file ({PHASE_NONE: 0, PHASE_BEGIN: 1,
+// PHASE_END: 2} in current Chromium); the parser resolves the values from
+// constants.logEventPhase, so the fixture mirrors the real numbering.
+export const PHASE = {
+  PHASE_NONE: 0,
+  PHASE_BEGIN: 1,
+  PHASE_END: 2
+}
+
 export const fixtureConstants = () => ({
   logCaptureMode: 'Everything',
   logEventTypes: { ...ET },
-  logSourceType: { ...ST }
+  logSourceType: { ...ST },
+  logEventPhase: { ...PHASE }
 })
 
-export const event = (sourceType, sourceId, type, params = {}) => ({
+// Non-lifecycle events (header transfers, body reads, bindings, redirects)
+// log as PHASE_NONE; REQUEST_ALIVE and URL_REQUEST_START_JOB log as
+// BEGIN/END pairs and pass their phase explicitly.
+export const event = (sourceType, sourceId, type, params = {}, phase = PHASE.PHASE_NONE) => ({
   source: { id: sourceId, type: sourceType },
   type,
+  phase,
   params
 })
 

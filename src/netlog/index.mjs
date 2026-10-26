@@ -4,9 +4,10 @@
 //
 // NetLog event model:
 //
-// Events are chronological; each has { source: { id, type }, type, params }.
-// Types are numeric in the file; names come from constants.logEventTypes /
-// constants.logSourceType (numbers vary between Chrome versions, so they are
+// Events are chronological; each has { source: { id, type }, type, phase,
+// params }. Types and phases are numeric in the file; their names map through
+// constants.logEventTypes / constants.logSourceType /
+// constants.logEventPhase (numbers vary between Chrome versions, so they are
 // always resolved dynamically).
 //
 // Relevant sources:
@@ -51,10 +52,16 @@ export { NetLogError } from './errors.mjs'
 export const buildExchangesFromNetLog = async (netlogPath, options = {}) => {
   const netlog = await readNetLog(netlogPath, options)
   const eventType = name => netlog.constants?.logEventTypes?.[name]
-  if (netlog.constants?.logEventTypes === undefined || netlog.constants?.logSourceType?.URL_REQUEST === undefined) {
-    throw new NetLogError('netlog is missing the event/source type constants')
+  if (netlog.constants?.logEventTypes === undefined || netlog.constants?.logSourceType?.URL_REQUEST === undefined ||
+      netlog.constants?.logEventPhase?.PHASE_BEGIN === undefined || netlog.constants?.logEventPhase?.PHASE_END === undefined) {
+    throw new NetLogError('netlog is missing the event/source type or phase constants')
   }
   const sourceType = netlog.constants.logSourceType
+  // Phases are numeric in the file ({PHASE_NONE: 0, PHASE_BEGIN: 1,
+  // PHASE_END: 2} in current Chromium) and resolved dynamically like the
+  // types above
+  const PHASE_BEGIN = netlog.constants.logEventPhase.PHASE_BEGIN
+  const PHASE_END = netlog.constants.logEventPhase.PHASE_END
 
   const ET = {
     requestAlive: eventType('REQUEST_ALIVE'),
@@ -167,15 +174,13 @@ export const buildExchangesFromNetLog = async (netlogPath, options = {}) => {
     const hops = []
     source.events.forEach((event, index) => {
       const params = event.params ?? {}
-      // Failure events on the source: the URL_REQUEST_START_JOB end (and the
-      // REQUEST_ALIVE end) carry net_error only when the job genuinely failed
-      // (truncated body, reset H2 stream, ...), mirroring the browser's own
-      // explicit error; cancellations are deliberately not logged as errors
-      // (url_request.cc logs net_error "only on failure"). The failure
+      // Failure events on the source: net_error is logged "only on failure"
+      // (url_request.cc), mirroring the browser's own explicit error;
+      // cancellations are deliberately not logged as errors. The failure
       // attaches to the in-flight hop: the hop whose request the failing job
-      // sent. Each job start seals the previous hop, so a completed redirect
-      // hop is immune to failures of the next job, which fails before its own
-      // request ever had headers.
+      // sent. A job start (BEGIN) seals the previous hop, so a completed
+      // redirect hop is immune to failures of the next job, which fails
+      // before its own request ever had headers.
       if (hop !== null && typeof params.net_error === 'number' && params.net_error !== 0) {
         hop.failed = true
       }
@@ -183,13 +188,14 @@ export const buildExchangesFromNetLog = async (netlogPath, options = {}) => {
         if (typeof params.url === 'string') url = params.url
       } else if (event.type === ET.startJob) {
         if (typeof params.url === 'string') url = params.url
-        // A job start seals the previous hop: the next job (e.g. the redirect
-        // destination) begins only after the previous hop's response was fully
-        // logged, and failures logged before the next send-headers event (DNS,
-        // proxy or connection setup, ...) belong to the still header-less job.
-        // END-phase events, which carry the job outcome (and net_error), never
-        // seal.
-        if (event.phase !== 'PHASE_END') hop = null
+        // A job start (BEGIN) seals the previous hop: the next job (e.g. the
+        // redirect destination) begins only after the previous hop's response
+        // was logged, and events logged before the next send-headers event
+        // (DNS, proxy or connection setup, ...) belong to the still
+        // header-less job. The START_JOB end event never seals: in real
+        // captures it fires once the response starts, after the response
+        // headers and before the body events.
+        if (event.phase === PHASE_BEGIN) hop = null
         // Browser-internal traffic (updater, safebrowsing, telemetry, background
         // services) is issued outside any page frame: its network
         // isolation/anonymization key has no accountable frame site (verified in

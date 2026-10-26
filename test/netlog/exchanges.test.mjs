@@ -6,7 +6,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 
 import { buildExchangesFromNetLog } from '../../src/netlog/index.mjs'
-import { ET, ST, event, h2SentBytes, writeNetlog, writeRawNetlog } from '../helpers/netlog-fixtures.mjs'
+import { ET, PHASE, ST, event, h2SentBytes, writeNetlog, writeRawNetlog } from '../helpers/netlog-fixtures.mjs'
 
 describe('buildExchangesFromNetLog', () => {
   for (const format of ['json', 'ndjson']) {
@@ -224,20 +224,58 @@ describe('buildExchangesFromNetLog', () => {
     // would still point at the completed redirect hop, which must not be
     // marked failed and dropped.
     const events = [
-      event(ST.URL_REQUEST, 530, ET.REQUEST_ALIVE, { url: 'http://example.com/redirect-me' }),
-      event(ST.URL_REQUEST, 530, ET.URL_REQUEST_START_JOB, { method: 'GET', url: 'http://example.com/redirect-me' }),
+      event(ST.URL_REQUEST, 530, ET.REQUEST_ALIVE, { url: 'http://example.com/redirect-me' }, PHASE.PHASE_BEGIN),
+      event(ST.URL_REQUEST, 530, ET.URL_REQUEST_START_JOB, { method: 'GET', url: 'http://example.com/redirect-me' }, PHASE.PHASE_BEGIN),
       event(ST.HTTP_STREAM_JOB, 531, ET.HTTP_STREAM_REQUEST_PROTO, { proto: 'http/1.1' }),
       event(ST.URL_REQUEST, 530, ET.HTTP_STREAM_REQUEST_BOUND_TO_JOB, { source_dependency: { id: 531, type: ST.HTTP_STREAM_JOB } }),
       event(ST.URL_REQUEST, 530, ET.HTTP_TRANSACTION_SEND_REQUEST_HEADERS, { line: 'GET /redirect-me HTTP/1.1\r\n', headers: ['Host: example.com'] }),
       event(ST.URL_REQUEST, 530, ET.HTTP_TRANSACTION_READ_RESPONSE_HEADERS, { headers: ['HTTP/1.1 302 Found'] }),
       event(ST.URL_REQUEST, 530, ET.URL_REQUEST_REDIRECTED, { location: 'http://example.com/dead-end' }),
-      event(ST.URL_REQUEST, 530, ET.URL_REQUEST_START_JOB, { method: 'GET', url: 'http://example.com/dead-end' }),
+      event(ST.URL_REQUEST, 530, ET.URL_REQUEST_START_JOB, { method: 'GET', url: 'http://example.com/dead-end' }, PHASE.PHASE_BEGIN),
       // the destination job fails before any request headers are sent
-      event(ST.URL_REQUEST, 530, ET.URL_REQUEST_START_JOB, { net_error: -105 }),
-      event(ST.URL_REQUEST, 530, ET.REQUEST_ALIVE, { net_error: -105 })
+      event(ST.URL_REQUEST, 530, ET.URL_REQUEST_START_JOB, { net_error: -105 }, PHASE.PHASE_END),
+      event(ST.URL_REQUEST, 530, ET.REQUEST_ALIVE, { net_error: -105 }, PHASE.PHASE_END)
     ]
     const { exchanges } = await buildExchangesFromNetLog(await writeNetlog(t, events))
     assert.deepStrictEqual(exchanges.map(e => e.url), ['http://example.com/redirect-me'])
+  })
+
+  it('attaches body reads logged after the START_JOB end event', async (t) => {
+    // Real captures log every event with a numeric phase resolved from
+    // constants.logEventPhase, and the URL_REQUEST_START_JOB end event fires
+    // once the response starts: after the response headers and before the
+    // body events. The end event must not seal the hop, or every body read
+    // is dropped.
+    const url = 'http://example.com/page'
+    const events = [
+      event(ST.URL_REQUEST, 960, ET.REQUEST_ALIVE, { url }, PHASE.PHASE_BEGIN),
+      event(ST.URL_REQUEST, 960, ET.URL_REQUEST_START_JOB, { method: 'GET', url }, PHASE.PHASE_BEGIN),
+      event(ST.URL_REQUEST, 960, ET.HTTP_TRANSACTION_SEND_REQUEST_HEADERS, { line: 'GET /page HTTP/1.1\r\n', headers: ['Host: example.com'] }),
+      event(ST.URL_REQUEST, 960, ET.HTTP_TRANSACTION_READ_RESPONSE_HEADERS, { headers: ['HTTP/1.1 200 OK'] }),
+      event(ST.URL_REQUEST, 960, ET.URL_REQUEST_START_JOB, {}, PHASE.PHASE_END),
+      event(ST.URL_REQUEST, 960, ET.URL_REQUEST_JOB_FILTERED_BYTES_READ, { bytes: Buffer.from('body').toString('base64') })
+    ]
+    const { exchanges } = await buildExchangesFromNetLog(await writeNetlog(t, events))
+    assert.strictEqual(exchanges.length, 1)
+    assert.strictEqual(exchanges[0].responseBody.toString(), 'body')
+  })
+
+  it('drops an exchange whose body read failed with a net_error', async (t) => {
+    // The REQUEST_ALIVE end carries net_error when the job failed mid-body:
+    // the hop is still in flight (only a job start seals it), so the failure
+    // marks it and the truncated exchange is dropped.
+    const url = 'http://example.com/truncated'
+    const events = [
+      event(ST.URL_REQUEST, 970, ET.REQUEST_ALIVE, { url }, PHASE.PHASE_BEGIN),
+      event(ST.URL_REQUEST, 970, ET.URL_REQUEST_START_JOB, { method: 'GET', url }, PHASE.PHASE_BEGIN),
+      event(ST.URL_REQUEST, 970, ET.HTTP_TRANSACTION_SEND_REQUEST_HEADERS, { line: 'GET /truncated HTTP/1.1\r\n', headers: ['Host: example.com'] }),
+      event(ST.URL_REQUEST, 970, ET.HTTP_TRANSACTION_READ_RESPONSE_HEADERS, { headers: ['HTTP/1.1 200 OK', 'content-length: 100'] }),
+      event(ST.URL_REQUEST, 970, ET.URL_REQUEST_START_JOB, {}, PHASE.PHASE_END),
+      event(ST.URL_REQUEST, 970, ET.URL_REQUEST_JOB_FILTERED_BYTES_READ, { bytes: Buffer.from('partial').toString('base64') }),
+      event(ST.URL_REQUEST, 970, ET.REQUEST_ALIVE, { net_error: -354 }, PHASE.PHASE_END)
+    ]
+    const { exchanges } = await buildExchangesFromNetLog(await writeNetlog(t, events))
+    assert.deepStrictEqual(exchanges, [])
   })
 
   it('does not bind a surviving request to a failed stream with identical headers', async (t) => {
@@ -264,7 +302,7 @@ describe('buildExchangesFromNetLog', () => {
     const events = [
       // the request on stream 3 fails without a response
       ...failedSource(920, 921),
-      event(ST.URL_REQUEST, 920, ET.REQUEST_ALIVE, { net_error: -324 }),
+      event(ST.URL_REQUEST, 920, ET.REQUEST_ALIVE, { net_error: -324 }, PHASE.PHASE_END),
       // the request on stream 5 succeeds, body differs from the failed one
       ...failedSource(930, 931),
       event(ST.URL_REQUEST, 930, ET.HTTP_TRANSACTION_READ_RESPONSE_HEADERS, { headers: ['HTTP/1.1 204'] }),
@@ -289,8 +327,8 @@ describe('buildExchangesFromNetLog', () => {
     const secondUrl = 'http://example.com/finally'
     const headers = (path) => [':method: GET', ':authority: example.com', ':scheme: http', `:path: ${path}`]
     const events = [
-      event(ST.URL_REQUEST, 400, ET.REQUEST_ALIVE, { url: firstUrl }),
-      event(ST.URL_REQUEST, 400, ET.URL_REQUEST_START_JOB, { method: 'GET', url: firstUrl }),
+      event(ST.URL_REQUEST, 400, ET.REQUEST_ALIVE, { url: firstUrl }, PHASE.PHASE_BEGIN),
+      event(ST.URL_REQUEST, 400, ET.URL_REQUEST_START_JOB, { method: 'GET', url: firstUrl }, PHASE.PHASE_BEGIN),
       event(ST.URL_REQUEST, 400, ET.HTTP_TRANSACTION_HTTP2_SEND_REQUEST_HEADERS, { headers: headers('/redirect-me') }),
       event(ST.URL_REQUEST, 400, ET.HTTP_TRANSACTION_READ_RESPONSE_HEADERS, { headers: ['HTTP/1.1 302'] }),
       event(ST.URL_REQUEST, 400, ET.URL_REQUEST_REDIRECTED, { location: secondUrl }),
@@ -309,8 +347,8 @@ describe('buildExchangesFromNetLog', () => {
     const addExchange = (sourceId, url, { status = 'HTTP/1.1 200 OK' } = {}) => {
       const path = new URL(url).pathname
       events.push(
-        event(ST.URL_REQUEST, sourceId, ET.REQUEST_ALIVE, { url }),
-        event(ST.URL_REQUEST, sourceId, ET.URL_REQUEST_START_JOB, { method: 'GET', url }),
+        event(ST.URL_REQUEST, sourceId, ET.REQUEST_ALIVE, { url }, PHASE.PHASE_BEGIN),
+        event(ST.URL_REQUEST, sourceId, ET.URL_REQUEST_START_JOB, { method: 'GET', url }, PHASE.PHASE_BEGIN),
         event(ST.HTTP_STREAM_JOB, sourceId + 1, ET.HTTP_STREAM_REQUEST_PROTO, { proto: 'http/1.1' }),
         event(ST.URL_REQUEST, sourceId, ET.HTTP_STREAM_REQUEST_BOUND_TO_JOB, { source_dependency: { id: sourceId + 1, type: ST.HTTP_STREAM_JOB } }),
         event(ST.URL_REQUEST, sourceId, ET.HTTP_TRANSACTION_SEND_REQUEST_HEADERS, { line: `GET ${path} HTTP/1.1\r\n`, headers: ['Host: example.com'] }),
@@ -320,12 +358,12 @@ describe('buildExchangesFromNetLog', () => {
     addExchange(500, 'http://example.com/good')
     // the START_JOB end carries net_error only when the job genuinely failed
     addExchange(510, 'http://example.com/failed')
-    events.push(event(ST.URL_REQUEST, 510, ET.URL_REQUEST_START_JOB, { net_error: -354 }))
+    events.push(event(ST.URL_REQUEST, 510, ET.URL_REQUEST_START_JOB, { net_error: -354 }, PHASE.PHASE_END))
     // redirect chain: hop 1 completes (302), hop 2 is aborted by the browser
     addExchange(520, 'http://example.com/redirect-me', { status: 'HTTP/1.1 302 Found' })
     events.push(event(ST.URL_REQUEST, 520, ET.URL_REQUEST_REDIRECTED, { location: 'http://example.com/aborted' }))
     addExchange(520, 'http://example.com/aborted')
-    events.push(event(ST.URL_REQUEST, 520, ET.URL_REQUEST_START_JOB, { net_error: -354 }))
+    events.push(event(ST.URL_REQUEST, 520, ET.URL_REQUEST_START_JOB, { net_error: -354 }, PHASE.PHASE_END))
     const { exchanges } = await buildExchangesFromNetLog(await writeNetlog(t, events))
     assert.deepStrictEqual(exchanges.map(e => e.url), [
       'http://example.com/good', 'http://example.com/redirect-me'
@@ -407,7 +445,7 @@ describe('buildExchangesFromNetLog', () => {
     const netlogPath = await writeRawNetlog(t, JSON.stringify({ events: [] }))
     await assert.rejects(buildExchangesFromNetLog(netlogPath), {
       name: 'NetLogError',
-      message: 'netlog is missing the event/source type constants'
+      message: 'netlog is missing the event/source type or phase constants'
     })
   })
 })

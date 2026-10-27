@@ -226,7 +226,10 @@ describe('netlog to WprGo archive conversion', () => {
     ].join('\r\n'))
   })
 
-  it('declares Content-Length: 0 for a body-allowed zero-length response', () => {
+  it('writes Content-Length: 0 after the sorted headers like Go resp.Write', () => {
+    // Go's transferWriter sends a zero Content-Length early only for
+    // POST/PUT/PATCH; for every other method the late write (response.go)
+    // places it after the sorted headers
     const archive = archiveFromExchanges([makeExchange({
       url: 'https://example.com/empty',
       path: '/empty',
@@ -238,10 +241,249 @@ describe('netlog to WprGo archive conversion', () => {
     const response = Buffer.from(archive.Requests['example.com']['https://example.com/empty'][0].SerializedResponse, 'base64').toString('latin1')
     assert.strictEqual(response, [
       'HTTP/1.1 200 OK',
+      'Content-Type: text/plain',
+      'Content-Length: 0',
+      '',
+      ''
+    ].join('\r\n'))
+  })
+
+  it('declares a zero Content-Length early for POST like Go resp.Write', () => {
+    const archive = archiveFromExchanges([makeExchange({
+      url: 'https://example.com/posted',
+      path: '/posted',
+      method: 'POST',
+      requestLine: 'POST /posted HTTP/1.1',
+      userAgent: null,
+      responseContentLength: 0,
+      responseEntries: [['Content-Type', 'text/plain']],
+      responseBody: Buffer.alloc(0)
+    })], new Map())
+    const response = Buffer.from(archive.Requests['example.com']['https://example.com/posted'][0].SerializedResponse, 'base64').toString('latin1')
+    assert.strictEqual(response, [
+      'HTTP/1.1 200 OK',
       'Content-Length: 0',
       'Content-Type: text/plain',
       '',
       ''
+    ].join('\r\n'))
+  })
+
+  it('writes a HEAD response\'s zero Content-Length late and its absent length as Connection: close', () => {
+    // ReadResponse re-parses the logged Content-Length for HEAD responses, so
+    // a logged zero is a known zero (late write) while an absent one is an
+    // unknown length, delimited by Connection: close
+    const archive = archiveFromExchanges([
+      makeExchange({
+        url: 'https://example.com/head-empty',
+        path: '/head-empty',
+        method: 'HEAD',
+        requestLine: 'HEAD /head-empty HTTP/1.1',
+        responseContentLength: 0,
+        responseEntries: [['Content-Type', 'text/plain']]
+      }),
+      makeExchange({
+        url: 'https://example.com/head-unknown',
+        path: '/head-unknown',
+        method: 'HEAD',
+        requestLine: 'HEAD /head-unknown HTTP/1.1',
+        responseContentLength: null,
+        responseEntries: [['Content-Type', 'text/plain']]
+      })
+    ], new Map())
+    const requests = archive.Requests['example.com']
+    assert.strictEqual(decodeResponse(requests['https://example.com/head-empty'][0]), [
+      'HTTP/1.1 200 OK',
+      'Content-Type: text/plain',
+      'Content-Length: 0',
+      '',
+      ''
+    ].join('\r\n'))
+    assert.strictEqual(decodeResponse(requests['https://example.com/head-unknown'][0]), [
+      'HTTP/1.1 200 OK',
+      'Connection: close',
+      'Content-Type: text/plain',
+      '',
+      ''
+    ].join('\r\n'))
+  })
+
+  it('delimits a HEAD 204 without a logged length with Connection: close like Go resp.Write', () => {
+    // Go zeroes the ContentLength of 204 responses, but for HEAD it re-parses
+    // the logged value: absent means -1, and resp.Write sets Close for -1
+    const archive = archiveFromExchanges([makeExchange({
+      url: 'https://example.com/head-204',
+      path: '/head-204',
+      method: 'HEAD',
+      requestLine: 'HEAD /head-204 HTTP/1.1',
+      responseStatusLine: 'HTTP/1.1 204 No Content',
+      responseCode: 204,
+      responseContentLength: null,
+      responseEntries: []
+    })], new Map())
+    assert.strictEqual(decodeResponse(archive.Requests['example.com']['https://example.com/head-204'][0]), [
+      'HTTP/1.1 204 No Content',
+      'Connection: close',
+      '',
+      ''
+    ].join('\r\n'))
+  })
+
+  it('writes no framing header for a 101 response', () => {
+    // Go's bodyAllowedForStatus excludes 1xx: ReadResponse zeroes the length
+    // and resp.Write emits no framing header, where an unknown-length
+    // Connection: close body would be malformed for a protocol switch
+    const archive = archiveFromExchanges([makeExchange({
+      url: 'https://example.com/upgrade',
+      path: '/upgrade',
+      responseStatusLine: 'HTTP/1.1 101 Switching Protocols',
+      responseCode: 101,
+      responseContentLength: null,
+      responseEntries: [['Upgrade', 'websocket']]
+    })], new Map())
+    assert.strictEqual(decodeResponse(archive.Requests['example.com']['https://example.com/upgrade'][0]), [
+      'HTTP/1.1 101 Switching Protocols',
+      'Upgrade: websocket',
+      '',
+      ''
+    ].join('\r\n'))
+  })
+
+  it('consumes a logged Connection: close header into the framing line like Go resp.Write', () => {
+    // Go's ReadResponse deletes a Connection header carrying the close token
+    // and sets Close; resp.Write emits the single Connection: close before
+    // Content-Length and Transfer-Encoding
+    const archive = archiveFromExchanges([
+      makeExchange({
+        url: 'https://example.com/closed-length',
+        path: '/closed-length',
+        responseContentLength: 5,
+        responseBody: Buffer.from('hello'),
+        responseEntries: [['Connection', 'close'], ['Content-Type', 'text/plain']]
+      }),
+      makeExchange({
+        url: 'https://example.com/closed-eof',
+        path: '/closed-eof',
+        responseContentLength: null,
+        responseBody: Buffer.from('body'),
+        responseEntries: [['Connection', 'close'], ['Content-Type', 'text/plain']]
+      }),
+      makeExchange({
+        url: 'https://example.com/closed-chunked',
+        path: '/closed-chunked',
+        responseChunked: true,
+        responseBody: Buffer.from('hello'),
+        responseEntries: [['Connection', 'close'], ['Content-Type', 'text/plain']]
+      }),
+      makeExchange({
+        url: 'https://example.com/closed-empty',
+        path: '/closed-empty',
+        responseContentLength: 0,
+        responseEntries: [['Connection', 'close'], ['Content-Type', 'text/plain']]
+      })
+    ], new Map())
+    const requests = archive.Requests['example.com']
+    assert.strictEqual(decodeResponse(requests['https://example.com/closed-length'][0]), [
+      'HTTP/1.1 200 OK',
+      'Connection: close',
+      'Content-Length: 5',
+      'Content-Type: text/plain',
+      '',
+      'hello'
+    ].join('\r\n'))
+    assert.strictEqual(decodeResponse(requests['https://example.com/closed-eof'][0]), [
+      'HTTP/1.1 200 OK',
+      'Connection: close',
+      'Content-Type: text/plain',
+      '',
+      'body'
+    ].join('\r\n'))
+    assert.strictEqual(decodeResponse(requests['https://example.com/closed-chunked'][0]), [
+      'HTTP/1.1 200 OK',
+      'Connection: close',
+      'Transfer-Encoding: chunked',
+      'Content-Type: text/plain',
+      '',
+      '5\r\nhello\r\n0\r\n\r\n'
+    ].join('\r\n'))
+    assert.strictEqual(decodeResponse(requests['https://example.com/closed-empty'][0]), [
+      'HTTP/1.1 200 OK',
+      'Connection: close',
+      'Content-Type: text/plain',
+      'Content-Length: 0',
+      '',
+      ''
+    ].join('\r\n'))
+  })
+
+  it('keeps a Connection: keep-alive header and closes HTTP/1.0 responses like Go resp.Write', () => {
+    // Go preserves a keep-alive-only Connection header and writes it from the
+    // sorted subset; an HTTP/1.0 response closes the connection unless its
+    // Connection header carries the keep-alive token, and a header carrying
+    // both tokens is consumed into the single Connection: close
+    const archive = archiveFromExchanges([
+      makeExchange({
+        url: 'https://example.com/keepalive',
+        path: '/keepalive',
+        responseContentLength: 5,
+        responseBody: Buffer.from('hello'),
+        responseEntries: [['Connection', 'keep-alive'], ['Content-Type', 'text/plain']]
+      }),
+      makeExchange({
+        url: 'https://example.com/old',
+        path: '/old',
+        responseStatusLine: 'HTTP/1.0 200 OK',
+        responseContentLength: 5,
+        responseBody: Buffer.from('hello'),
+        responseEntries: [['Content-Type', 'text/plain']]
+      }),
+      makeExchange({
+        url: 'https://example.com/old-keepalive',
+        path: '/old-keepalive',
+        responseStatusLine: 'HTTP/1.0 200 OK',
+        responseContentLength: 5,
+        responseBody: Buffer.from('hello'),
+        responseEntries: [['Connection', 'keep-alive'], ['Content-Type', 'text/plain']]
+      }),
+      makeExchange({
+        url: 'https://example.com/mixed',
+        path: '/mixed',
+        responseContentLength: null,
+        responseBody: Buffer.from('body'),
+        responseEntries: [['Connection', 'keep-alive, close'], ['Content-Type', 'text/plain']]
+      })
+    ], new Map())
+    const requests = archive.Requests['example.com']
+    assert.strictEqual(decodeResponse(requests['https://example.com/keepalive'][0]), [
+      'HTTP/1.1 200 OK',
+      'Content-Length: 5',
+      'Connection: keep-alive',
+      'Content-Type: text/plain',
+      '',
+      'hello'
+    ].join('\r\n'))
+    assert.strictEqual(decodeResponse(requests['https://example.com/old'][0]), [
+      'HTTP/1.0 200 OK',
+      'Connection: close',
+      'Content-Length: 5',
+      'Content-Type: text/plain',
+      '',
+      'hello'
+    ].join('\r\n'))
+    assert.strictEqual(decodeResponse(requests['https://example.com/old-keepalive'][0]), [
+      'HTTP/1.0 200 OK',
+      'Content-Length: 5',
+      'Connection: keep-alive',
+      'Content-Type: text/plain',
+      '',
+      'hello'
+    ].join('\r\n'))
+    assert.strictEqual(decodeResponse(requests['https://example.com/mixed'][0]), [
+      'HTTP/1.1 200 OK',
+      'Connection: close',
+      'Content-Type: text/plain',
+      '',
+      'body'
     ].join('\r\n'))
   })
 
@@ -891,6 +1133,23 @@ describe('CSP replay-nonce seeding', () => {
     assert.strictEqual(values.length, 2)
     const nonce = /^script-src 'nonce-([^']+)' 'self'$/.exec(values[0])[1]
     assert.strictEqual(values[1], `script-src 'nonce-${nonce}' 'self'`)
+  })
+
+  it('seeds a shadowed script-src rewrite target that wpr would relax', () => {
+    // The element directive (script-src-elem 'unsafe-inline') already admits
+    // the injected tag, so needsSeed is false — but wpr's rewrite target is
+    // the first 'script-src'-prefixed directive, here the shadowed
+    // script-src 'self', which would get 'unsafe-inline' appended at replay,
+    // un-blocking the event handlers that fall back to it. Seeding the nonce
+    // there is permission-neutral ('self' coexists with it, handlers stay
+    // blocked since they cannot carry one) and leaves wpr's rewrite idle.
+    const archive = build([exchange([['Content-Security-Policy', "script-src 'self'; script-src-elem 'unsafe-inline'"]])])
+    const [csp] = cspValues(archive.Requests['example.com']['https://example.com/'][0])
+    const nonce = /'nonce-([^']+)'/.exec(csp)[1]
+    assert.deepStrictEqual(csp.split(';').map(directive => directive.trim()), [
+      `script-src 'nonce-${nonce}' 'self'`,
+      "script-src-elem 'unsafe-inline'"
+    ])
   })
 
   it('normalizes CSP whitespace so wpr recognizes existing nonces', () => {

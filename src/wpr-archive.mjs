@@ -114,13 +114,15 @@ const chunkedBody = (body) => {
  * 'chunked' re-frames the de-chunked body with Transfer-Encoding: chunked and
  * takes priority over a logged Content-Length (Chromium and Go's
  * http.ReadResponse both frame by Transfer-Encoding when a response carries
- * both); 'length' declares Content-Length; 'close' is an h2 response with
- * unknown length, delimited by Connection: close; 'eof' is an h1 response
- * with unknown length, also delimited by Connection: close (Go sets Close
- * and keeps the logged HTTP/1.x version); 'none' is a known zero length
- * (Content-Length: 0 on a body-allowed status) or a no-body status such as
- * 204/304, which serializes no framing header.
- * @typedef {{ kind: 'length', length: number } | { kind: 'chunked' } | { kind: 'close' } | { kind: 'eof' } | { kind: 'none' }} ResponseFraming
+ * both); 'length' declares a known positive Content-Length before the sorted
+ * headers; 'zero' is a known zero length (Go writes Content-Length: 0 early
+ * for POST/PUT/PATCH and late for every other body-allowed status; 1xx/204/
+ * 304 get no line for GET/HEAD); 'close' is an h2 response with unknown
+ * length and 'eof' an h1 response with unknown length, both delimited by
+ * Connection: close. For HEAD, ReadResponse re-parses the logged
+ * Content-Length (net/http transfer.go), so an absent one is an unknown
+ * length even on 1xx/204/304.
+ * @typedef {{ kind: 'length', length: number } | { kind: 'chunked' } | { kind: 'close' } | { kind: 'eof' } | { kind: 'zero' }} ResponseFraming
  */
 
 /**
@@ -157,30 +159,20 @@ const responseFraming = (exchange) => {
   if (exchange.responseChunked) return { kind: 'chunked' }
   const length = declaredResponseLength(exchange)
   if (length !== null && length > 0) return { kind: 'length', length }
+  if (length === 0) return { kind: 'zero' }
   if (length === null) {
-    // An unknown length only delimits a body on a body-allowed status: wpr's
-    // Go ReadResponse gives no-body statuses (HEAD/204/304) a zero length and
-    // Close=false, so they serialize without any framing header.
-    if (!expectsResponseBody(exchange)) return { kind: 'none' }
+    // An unknown length is ContentLength -1 in Go, which resp.Write delimits
+    // with Connection: close. ReadResponse zeroes the length of 1xx/204/304
+    // responses, so those serialize under the zero-length rules instead —
+    // except HEAD, whose logged Content-Length ReadResponse re-parses
+    // (transfer.go), making an absent one a real unknown length.
+    if (!expectsResponseBody(exchange) && exchange.method !== 'HEAD') return { kind: 'zero' }
     return exchange.isHttp1 ? { kind: 'eof' } : { kind: 'close' }
   }
-  return { kind: 'none' }
 }
 
-/** @param {ResponseFraming} framing @returns {string|null} */
-const framingHeader = (framing, exchange) => {
-  switch (framing.kind) {
-    case 'length': return `Content-Length: ${framing.length}`
-    case 'chunked': return 'Transfer-Encoding: chunked'
-    case 'close': return 'Connection: close'
-    // Go marks an EOF-delimited body by setting Close: the status line keeps
-    // its logged HTTP/1.x version and resp.Write emits Connection: close.
-    case 'eof': return 'Connection: close'
-    // A known zero length on a body-allowed status writes Content-Length: 0;
-    // no-body statuses carry no framing header at all.
-    case 'none': return expectsResponseBody(exchange) ? 'Content-Length: 0' : null
-  }
-}
+// Go's bodyAllowedForStatus: 1xx, 204 and 304 responses carry no body
+const bodyAllowedForStatus = (status) => status >= 200 && status !== 204 && status !== 304
 
 /**
  * Serializes a request the way Go's http.Request.Write does (the format wpr
@@ -232,19 +224,52 @@ const serializeResponse = (exchange) => {
     const reason = HTTP_REASONS[exchange.responseCode]
     statusLine = `HTTP/2.0 ${exchange.responseCode} ${reason ?? ''}`
   }
+  // Go's ReadResponse consumes a Connection header carrying the close token
+  // (shouldClose deletes the whole header and sets Close) and resp.Write
+  // re-emits exactly one Connection: close in the framing block before
+  // Content-Length and Transfer-Encoding; keep-alive-only values are kept
+  // and written from the sorted subset. HTTP/1.0 responses close unless the
+  // Connection header carries the keep-alive token.
+  const tokens = connectionHeaderTokens(exchange.responseEntries)
+  const loggedClose = tokens.includes('close')
+  const entries = loggedClose
+    ? exchange.responseEntries.filter(([name]) => name !== 'Connection')
+    : exchange.responseEntries
+  const close = framing.kind === 'eof' || framing.kind === 'close' || loggedClose ||
+    (isHttp10(exchange) && !tokens.includes('keep-alive'))
   const lines = [statusLine]
-  const framingHeaderValue = framingHeader(framing, exchange)
-  if (framingHeaderValue !== null) lines.push(framingHeaderValue)
-  lines.push(...sortedHeaderLines(exchange.responseEntries))
+  if (close) lines.push('Connection: close')
+  if (framing.kind === 'length') lines.push(`Content-Length: ${framing.length}`)
+  if (framing.kind === 'chunked') lines.push('Transfer-Encoding: chunked')
+  // Go writes a known zero length early only for POST/PUT/PATCH
+  // (shouldSendContentLength); every other method gets the late
+  // Content-Length: 0 write (response.go), which bodyless statuses skip.
+  const earlyZero = framing.kind === 'zero' && ['POST', 'PUT', 'PATCH'].includes(exchange.method)
+  if (earlyZero) lines.push('Content-Length: 0')
+  lines.push(...sortedHeaderLines(entries))
+  if (framing.kind === 'zero' && !earlyZero && bodyAllowedForStatus(exchange.responseCode)) {
+    lines.push('Content-Length: 0')
+  }
   const head = Buffer.from(`${lines.join('\r\n')}\r\n\r\n`)
   // The body framing follows the same kind the head was built from: a chunked
-  // response is re-chunked even when a Content-Length was also logged.
+  // response is re-chunked even when a Content-Length was also logged; a HEAD
+  // response writes no body at all, not even the terminal chunk.
   if (framing.kind === 'chunked') {
     // Re-frame the de-chunked body exactly like Go's resp.Write
-    return Buffer.concat([head, chunkedBody(exchange.responseBody)])
+    return Buffer.concat([head, exchange.method === 'HEAD' ? Buffer.alloc(0) : chunkedBody(exchange.responseBody)])
   }
   return Buffer.concat([head, exchange.responseBody])
 }
+
+// Connection header tokens, lowercased (Go matches them case-insensitively)
+const connectionHeaderTokens = (entries) => entries
+  .filter(([name]) => name === 'Connection')
+  .flatMap(([, value]) => value.split(',').map(token => token.trim().toLowerCase()))
+
+// HTTP/1.0 responses close the connection unless the Connection header
+// carries the keep-alive token (Go's shouldClose)
+const isHttp10 = (exchange) =>
+  exchange.isHttp1 && (exchange.responseStatusLine ?? '').startsWith('HTTP/1.0')
 
 // CSP directive tokens as browsers read them: whitespace-separated, with
 // case-insensitive names and keyword spellings (CSP spec). wpr's
@@ -464,21 +489,24 @@ const seedCspReplayNonce = (exchange, nonce) => {
     }))
   }
 
-  // wpr's rewrite target can itself be a script-src-attr directive (its name
-  // starts with 'script-src'): a target carrying neither a nonce, a hash nor
-  // 'unsafe-inline' would get 'unsafe-inline' appended at replay, un-blocking
-  // handlers the recording had blocked. Seed the replay nonce into such
-  // targets to leave wpr's rewrite idle — handler attributes can never carry
-  // a nonce, so the policy keeps blocking handlers exactly as before. This
-  // runs whether or not needsSeed: when the element directives already admit
-  // the tag, the attribute target is the only thing wpr would still relax.
-  // These directives don't govern the injected tag, so they are not seeded
-  // as element directives.
+  // wpr's rewrite target — the first 'script-src'-prefixed directive, which
+  // prefix-matches script-src-attr and shadowed script-src directives alike —
+  // carrying neither a nonce, a hash nor 'unsafe-inline' would get
+  // 'unsafe-inline' appended at replay. For an attribute target that
+  // un-blocks handlers the recording had blocked (handler attributes can
+  // never carry a nonce, so seeding keeps them blocked exactly as before);
+  // for a script-src shadowed by a permissive script-src-elem it un-blocks
+  // the handlers falling back to it, and seeding is permission-neutral there
+  // ('self' coexists with the nonce, and the element directive still governs
+  // elements). This runs whether or not needsSeed: when the element
+  // directives already admit the tag, the rewrite target is the only thing
+  // wpr would still relax. An element-governing target always carries our
+  // nonce (needsSeed seeded it), admits the tag via 'unsafe-inline', or
+  // carries a foreign nonce or hash — none are re-seeded here.
   cspPolicies.forEach(policies => policies.forEach(directives => {
     const index = wprDirectiveIndex(directives)
     if (index === -1) return
     const directive = directives[index]
-    if (cspDirectiveName(directive) !== 'script-src-attr') return
     if (cspHasNonce(directive) || cspHasSha(directive) || cspHasUnsafeInline(directive)) return
     seed({ directives, index })
   }))
@@ -524,9 +552,10 @@ const seedCspReplayNonce = (exchange, nonce) => {
   return unchanged ? exchange.responseEntries : rebuilt
 }
 
-// HEAD, 204 and 304 responses carry no body even when a length is logged
+// HEAD, 1xx, 204 and 304 responses carry no body even when a length is
+// logged (Go's bodyAllowedForStatus plus the HEAD method)
 const expectsResponseBody = (exchange) =>
-  exchange.method !== 'HEAD' && exchange.responseCode !== 204 && exchange.responseCode !== 304
+  exchange.method !== 'HEAD' && bodyAllowedForStatus(exchange.responseCode)
 
 // A successful 3xx hop: Chromium follows the Location without reading the
 // redirect body, so the hop completes with an empty recovered body no matter

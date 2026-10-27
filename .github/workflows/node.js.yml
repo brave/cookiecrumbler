@@ -29,7 +29,7 @@ jobs:
     #    ports:
     #      - 11434:11434
 
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     strategy:
       matrix:
         node-version: [24]

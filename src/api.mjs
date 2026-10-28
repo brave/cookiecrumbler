@@ -41,7 +41,7 @@ const STREAM_HEARTBEAT_MS = 15000
 export const createApp = ({ browserBinaryPath }) => {
   // Calculate default max concurrency based on available memory
   const totalMemoryMB = os.totalmem() / (1024 * 1024)
-  const DEFAULT_MAX_CONCURRENCY = Math.floor(totalMemoryMB / 256)
+  const DEFAULT_MAX_CONCURRENCY = Math.floor(totalMemoryMB / 512)
 
   const maxConcurrency = parseInt(process.env.MAX_CONCURRENCY) || DEFAULT_MAX_CONCURRENCY
   const maxConcurrencyWaitMs = parseInt(process.env.MAX_CONCURRENCY_WAIT_MS) || 2000

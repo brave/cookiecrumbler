@@ -1,5 +1,5 @@
 // NetLog file reading: size rejection, format sniffing (legacy single-JSON vs
-// NDJSON) and event extraction. The reconstruction itself lives in index.mjs.
+// NDJSON) and event extraction. The reconstruction itself lives in exchanges.mjs.
 
 import fs from 'fs/promises'
 import { createInterface } from 'node:readline'

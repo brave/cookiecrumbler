@@ -27,12 +27,13 @@ const WPR_DISABLED_FEATURES = [
 ]
 
 /**
- * Non-resolving URL used for check requests so the browser cannot fetch
- * component updates even when --allow-brave-component-update is set.
+ * Non-resolving URL used for check requests to override browser services
+ * (component updates, stats/P3A endpoints) so the browser cannot reach them
+ * even when --allow-brave-component-update is set.
  * (.invalid is a reserved TLD that never resolves.)
  * Setup must keep default
  */
-export const INVALID_COMPONENT_UPDATER_URL = 'https://localhost.invalid/'
+export const INVALID_SERVICE_URL = 'https://localhost.invalid/'
 
 const mergedDisableFeatures = (requestedFeatures, extraDisabledFeatures = []) => {
   const requestedAllowedFeatures = Array.isArray(requestedFeatures)
@@ -62,10 +63,13 @@ export const puppeteerConfigForArgs = async (args) => {
     headless: !(args.interactive ?? false)
   }
 
-  // Check requests only: override the component updater so Brave cannot
-  // download updates. Setup must not set invalidateComponentUpdater.
+  // Check requests only: override the component updater and telemetry endpoints
+  // so Brave cannot reach them. Setup must not set invalidateComponentUpdater.
   if (args.invalidateComponentUpdater) {
-    puppeteerArgs.args.push(`--component-updater=url-source=${INVALID_COMPONENT_UPDATER_URL}`)
+    puppeteerArgs.args.push(`--component-updater=url-source=${INVALID_SERVICE_URL}`)
+    puppeteerArgs.args.push(`--brave-stats-updater-server=${INVALID_SERVICE_URL}`)
+    puppeteerArgs.args.push(`--p3a-star-randomness-host=${INVALID_SERVICE_URL}`)
+    puppeteerArgs.args.push(`--p3a-constellation-upload-host=${INVALID_SERVICE_URL}`)
   }
 
   if (args.wprGoPorts !== undefined) {

@@ -11,6 +11,5 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["src/**/*.mjs"],
-  "exclude": ["src/netlog/exchanges.mjs"]
+  "include": ["src/**/*.mjs"]
 }

@@ -5,7 +5,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { parseNetLog } from '../src/netlog/exchanges.mjs'
+import { parseNetLog, isInternalRequest } from '../src/netlog/exchanges.mjs'
 import { ET, fixtureConstants, PHASE, ST, event, h2SentBytes, writeNetlog, writeRawNetlog } from './helpers/fixtures.mjs'
 
 describe('parseNetLog', () => {
@@ -55,7 +55,7 @@ describe('parseNetLog', () => {
       assert.strictEqual(exchange.responseBody.toString(), 'wire-bytes')
       assert.strictEqual(exchange.negotiatedProtocol, 'h2')
       assert.deepStrictEqual([...negotiatedProtocols], [['example.com', 'h2']])
-      assert.deepStrictEqual(stats, { exchanges: 1, dropped: { failed: 0, unparsable: 0 } })
+      assert.deepStrictEqual(stats, { exchanges: 1, dropped: { failed: 0, unparsable: 0, internalRequests: 0 } })
     })
   }
 
@@ -87,7 +87,7 @@ describe('parseNetLog', () => {
     assert.strictEqual(exchanges.length, 1)
     assert.deepStrictEqual(exchanges[0].requestBody, body)
     assert.strictEqual(exchanges[0].method, 'POST')
-    assert.deepStrictEqual(stats, { exchanges: 1, dropped: { failed: 0, unparsable: 0 } })
+    assert.deepStrictEqual(stats, { exchanges: 1, dropped: { failed: 0, unparsable: 0, internalRequests: 0 } })
   })
 
   it('recovered h2 bodies follow send order when two requests log identical header lists', async (t) => {
@@ -137,7 +137,7 @@ describe('parseNetLog', () => {
     const { exchanges, stats } = await parseNetLog(await writeNetlog(t, events))
     assert.strictEqual(exchanges.length, 2)
     assert.deepStrictEqual(exchanges.map(e => e.requestBody.toString()), ['first-body', 'second-body'])
-    assert.deepStrictEqual(stats, { exchanges: 2, dropped: { failed: 0, unparsable: 0 } })
+    assert.deepStrictEqual(stats, { exchanges: 2, dropped: { failed: 0, unparsable: 0, internalRequests: 0 } })
   })
 
   it('reconstructs an h1 exchange and recovers its request body from the socket bytes', async (t) => {
@@ -175,7 +175,7 @@ describe('parseNetLog', () => {
     assert.strictEqual(exchange.responseContentLength, 10)
     assert.strictEqual(exchange.responseBody.toString(), 'plain-body')
     assert.deepStrictEqual([...negotiatedProtocols], [['example.com', 'http/1.1']])
-    assert.deepStrictEqual(stats, { exchanges: 1, dropped: { failed: 0, unparsable: 0 } })
+    assert.deepStrictEqual(stats, { exchanges: 1, dropped: { failed: 0, unparsable: 0, internalRequests: 0 } })
   })
 
   it('attributes keep-alive h1 bodies in wire order when a redirect hop logs more events', async (t) => {
@@ -220,7 +220,7 @@ describe('parseNetLog', () => {
       'GET /redirect-me HTTP/1.1', 'POST /api HTTP/1.1', 'POST /api HTTP/1.1'
     ])
     assert.deepStrictEqual(exchanges.map(e => e.requestBody.toString()), ['', 'AAAAA', 'BBBBB'])
-    assert.deepStrictEqual(stats, { exchanges: 3, dropped: { failed: 0, unparsable: 0 } })
+    assert.deepStrictEqual(stats, { exchanges: 3, dropped: { failed: 0, unparsable: 0, internalRequests: 0 } })
   })
 
   it('keeps a completed redirect hop when the destination fails before sending headers', async (t) => {
@@ -243,7 +243,7 @@ describe('parseNetLog', () => {
     ]
     const { exchanges, stats } = await parseNetLog(await writeNetlog(t, events))
     assert.deepStrictEqual(exchanges.map(e => e.url), ['http://example.com/redirect-me'])
-    assert.deepStrictEqual(stats, { exchanges: 1, dropped: { failed: 0, unparsable: 0 } })
+    assert.deepStrictEqual(stats, { exchanges: 1, dropped: { failed: 0, unparsable: 0, internalRequests: 0 } })
   })
 
   it('attaches body reads logged after the START_JOB end event', async (t) => {
@@ -264,7 +264,7 @@ describe('parseNetLog', () => {
     const { exchanges, stats } = await parseNetLog(await writeNetlog(t, events))
     assert.strictEqual(exchanges.length, 1)
     assert.strictEqual(exchanges[0].responseBody.toString(), 'body')
-    assert.deepStrictEqual(stats, { exchanges: 1, dropped: { failed: 0, unparsable: 0 } })
+    assert.deepStrictEqual(stats, { exchanges: 1, dropped: { failed: 0, unparsable: 0, internalRequests: 0 } })
   })
 
   it('drops an exchange whose body read failed with a net_error', async (t) => {
@@ -283,7 +283,7 @@ describe('parseNetLog', () => {
     ]
     const { exchanges, stats } = await parseNetLog(await writeNetlog(t, events))
     assert.deepStrictEqual(exchanges, [])
-    assert.deepStrictEqual(stats, { exchanges: 0, dropped: { failed: 1, unparsable: 0 } })
+    assert.deepStrictEqual(stats, { exchanges: 0, dropped: { failed: 1, unparsable: 0, internalRequests: 0 } })
   })
 
   it('does not bind a surviving request to a failed stream with identical headers', async (t) => {
@@ -328,7 +328,7 @@ describe('parseNetLog', () => {
     const { exchanges, stats } = await parseNetLog(await writeNetlog(t, events))
     assert.strictEqual(exchanges.length, 1)
     assert.strictEqual(exchanges[0].requestBody.toString(), 'ok-body')
-    assert.deepStrictEqual(stats, { exchanges: 1, dropped: { failed: 1, unparsable: 0 } })
+    assert.deepStrictEqual(stats, { exchanges: 1, dropped: { failed: 1, unparsable: 0, internalRequests: 0 } })
   })
 
   it('does not bind a surviving h1 request to a failed request with identical headers', async (t) => {
@@ -366,7 +366,7 @@ describe('parseNetLog', () => {
     const { exchanges, stats } = await parseNetLog(await writeNetlog(t, events))
     assert.strictEqual(exchanges.length, 1)
     assert.strictEqual(exchanges[0].requestBody.toString(), 'BBBBB')
-    assert.deepStrictEqual(stats, { exchanges: 1, dropped: { failed: 1, unparsable: 0 } })
+    assert.deepStrictEqual(stats, { exchanges: 1, dropped: { failed: 1, unparsable: 0, internalRequests: 0 } })
   })
 
   it('splits redirect hops into one exchange per URL', async (t) => {
@@ -387,7 +387,7 @@ describe('parseNetLog', () => {
       [firstUrl, 302, '/redirect-me'],
       [secondUrl, 200, '/finally']
     ])
-    assert.deepStrictEqual(stats, { exchanges: 2, dropped: { failed: 0, unparsable: 0 } })
+    assert.deepStrictEqual(stats, { exchanges: 2, dropped: { failed: 0, unparsable: 0, internalRequests: 0 } })
   })
 
   it('drops hops the browser failed with a net_error, keeping completed redirect hops', async (t) => {
@@ -416,7 +416,7 @@ describe('parseNetLog', () => {
     assert.deepStrictEqual(exchanges.map(e => e.url), [
       'http://example.com/good', 'http://example.com/redirect-me'
     ])
-    assert.deepStrictEqual(stats, { exchanges: 2, dropped: { failed: 2, unparsable: 0 } })
+    assert.deepStrictEqual(stats, { exchanges: 2, dropped: { failed: 2, unparsable: 0, internalRequests: 0 } })
   })
 
   it('ignores net_error events that are not the START_JOB or REQUEST_ALIVE end', async (t) => {
@@ -435,7 +435,7 @@ describe('parseNetLog', () => {
     const { exchanges, stats } = await parseNetLog(await writeNetlog(t, events))
     assert.strictEqual(exchanges.length, 1)
     assert.strictEqual(exchanges[0].responseBody.toString(), 'body')
-    assert.deepStrictEqual(stats, { exchanges: 1, dropped: { failed: 0, unparsable: 0 } })
+    assert.deepStrictEqual(stats, { exchanges: 1, dropped: { failed: 0, unparsable: 0, internalRequests: 0 } })
   })
 
   it('orders exchanges chronologically, not by first-seen source', async (t) => {
@@ -454,7 +454,7 @@ describe('parseNetLog', () => {
     ]
     const { exchanges, stats } = await parseNetLog(await writeNetlog(t, events))
     assert.deepStrictEqual(exchanges.map(e => e.path), ['/a', '/b'])
-    assert.deepStrictEqual(stats, { exchanges: 2, dropped: { failed: 0, unparsable: 0 } })
+    assert.deepStrictEqual(stats, { exchanges: 2, dropped: { failed: 0, unparsable: 0, internalRequests: 0 } })
   })
 
   it('reports an unparsable status line through onWarning and drops the exchange', async (t) => {
@@ -469,7 +469,160 @@ describe('parseNetLog', () => {
     const { exchanges, stats } = await parseNetLog(await writeNetlog(t, events), { onWarning: warning => warnings.push(warning) })
     assert.deepStrictEqual(exchanges, [])
     assert.deepStrictEqual(warnings, [{ code: 'UNPARSABLE_STATUS', url, message: 'unparsable status line' }])
-    assert.deepStrictEqual(stats, { exchanges: 0, dropped: { failed: 0, unparsable: 1 } })
+    assert.deepStrictEqual(stats, { exchanges: 0, dropped: { failed: 0, unparsable: 1, internalRequests: 0 } })
+  })
+
+  // Browser-internal fixtures from real capture shapes: an updater-style
+  // request with an empty ("null null") isolation key and a Safe Browsing-style
+  // request with an anonymized ("null [internally: ...]") anonymization key
+  const internalKeyedSources = () => [
+    // browser-internal: component-updater style request with no page frame
+    event(ST.URL_REQUEST, 601, ET.REQUEST_ALIVE, { url: 'https://localhost.invalid/' }, PHASE.PHASE_BEGIN),
+    event(ST.URL_REQUEST, 601, ET.URL_REQUEST_START_JOB, { method: 'POST', url: 'https://localhost.invalid/', network_isolation_key: 'null null' }, PHASE.PHASE_BEGIN),
+    event(ST.URL_REQUEST, 601, ET.HTTP_TRANSACTION_HTTP2_SEND_REQUEST_HEADERS, {
+      headers: [':method: POST', ':authority: localhost.invalid', ':scheme: https', ':path: /']
+    }),
+    event(ST.URL_REQUEST, 601, ET.HTTP_TRANSACTION_READ_RESPONSE_HEADERS, { headers: ['HTTP/1.1 404'] }),
+    // browser-internal with an 'internally' anonymization key variant
+    event(ST.URL_REQUEST, 602, ET.REQUEST_ALIVE, { url: 'https://safebrowsing.example.com/list' }, PHASE.PHASE_BEGIN),
+    event(ST.URL_REQUEST, 602, ET.URL_REQUEST_START_JOB, { method: 'GET', url: 'https://safebrowsing.example.com/list', network_anonymization_key: 'null [internally: ...]' }, PHASE.PHASE_BEGIN),
+    event(ST.URL_REQUEST, 602, ET.HTTP_TRANSACTION_HTTP2_SEND_REQUEST_HEADERS, {
+      headers: [':method: GET', ':authority: safebrowsing.example.com', ':scheme: https', ':path: /list']
+    }),
+    event(ST.URL_REQUEST, 602, ET.HTTP_TRANSACTION_READ_RESPONSE_HEADERS, { headers: ['HTTP/1.1 200'] })
+  ]
+
+  // A browser-internal streamed upload on a captured socket: its chunked
+  // request body rejects the capture when the source is not dropped before
+  // body correlation
+  const internalChunkedUploadSource = () => [
+    event(ST.URL_REQUEST, 603, ET.REQUEST_ALIVE, { url: 'https://localhost.invalid/upload' }, PHASE.PHASE_BEGIN),
+    event(ST.URL_REQUEST, 603, ET.URL_REQUEST_START_JOB, { method: 'POST', url: 'https://localhost.invalid/upload', network_isolation_key: 'null null' }, PHASE.PHASE_BEGIN),
+    event(ST.HTTP_STREAM_JOB, 613, ET.HTTP_STREAM_REQUEST_PROTO, { proto: 'http/1.1' }),
+    event(ST.HTTP_STREAM_JOB, 613, ET.SOCKET_POOL_BOUND_TO_SOCKET, { source_dependency: { id: 614, type: ST.SOCKET } }),
+    event(ST.URL_REQUEST, 603, ET.HTTP_STREAM_REQUEST_BOUND_TO_JOB, { source_dependency: { id: 613, type: ST.HTTP_STREAM_JOB } }),
+    event(ST.URL_REQUEST, 603, ET.HTTP_TRANSACTION_SEND_REQUEST_HEADERS, {
+      line: 'POST /upload HTTP/1.1\r\n',
+      headers: ['Host: localhost.invalid', 'transfer-encoding: chunked']
+    }),
+    event(ST.URL_REQUEST, 603, ET.HTTP_TRANSACTION_READ_RESPONSE_HEADERS, { headers: ['HTTP/1.1 200'] }),
+    event(ST.SOCKET, 614, ET.SOCKET_BYTES_SENT, {
+      byte_count: 56,
+      bytes: Buffer.from('POST /upload HTTP/1.1\r\nHost: localhost.invalid\r\ntransfer-encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n').toString('base64')
+    })
+  ]
+
+  it('drops browser-internal traffic by default (isolation key, anonymization key, chunked upload)', async (t) => {
+    const { exchanges, stats } = await parseNetLog(await writeNetlog(t, [...internalKeyedSources(), ...internalChunkedUploadSource()]))
+    assert.deepStrictEqual(exchanges, [])
+    assert.deepStrictEqual(stats, { exchanges: 0, dropped: { failed: 0, unparsable: 0, internalRequests: 3 } })
+  })
+
+  it('keeps browser-internal traffic when dropInternalRequests is false', async (t) => {
+    const { exchanges, stats } = await parseNetLog(await writeNetlog(t, internalKeyedSources()), { dropInternalRequests: false })
+    assert.deepStrictEqual(exchanges.map(e => [e.url, e.method]), [
+      ['https://localhost.invalid/', 'POST'],
+      ['https://safebrowsing.example.com/list', 'GET']
+    ])
+    assert.deepStrictEqual(stats, { exchanges: 2, dropped: { failed: 0, unparsable: 0, internalRequests: 0 } })
+  })
+
+  it('throws on a chunked internal upload only when internal requests are kept', async (t) => {
+    const netlogPath = await writeNetlog(t, internalChunkedUploadSource())
+    // dropped by default, before any wire-level parsing
+    const { exchanges, stats } = await parseNetLog(netlogPath)
+    assert.deepStrictEqual(exchanges, [])
+    assert.deepStrictEqual(stats, { exchanges: 0, dropped: { failed: 0, unparsable: 0, internalRequests: 1 } })
+    // kept with the flag off: the chunked upload rejects the capture like any
+    // other request
+    await assert.rejects(parseNetLog(netlogPath, { dropInternalRequests: false }), {
+      name: 'NetLogError',
+      code: 'CHUNKED_UPLOAD',
+      message: 'unexpected chunked HTTP/1 request body on https://localhost.invalid/upload: streamed uploads are not supported'
+    })
+  })
+
+  it('drops a request whose anonymization key starts with null despite a real isolation key', async (t) => {
+    // The isolation and anonymization keys are checked independently: a real
+    // site key on one of them does not keep the request when the other one is
+    // anonymized
+    const url = 'https://example.com/telemetry'
+    const events = [
+      event(ST.URL_REQUEST, 620, ET.REQUEST_ALIVE, { url }, PHASE.PHASE_BEGIN),
+      event(ST.URL_REQUEST, 620, ET.URL_REQUEST_START_JOB, {
+        method: 'POST',
+        url,
+        network_isolation_key: 'https://example.com https://example.com',
+        network_anonymization_key: 'null https://example.com'
+      }, PHASE.PHASE_BEGIN),
+      event(ST.URL_REQUEST, 620, ET.HTTP_TRANSACTION_HTTP2_SEND_REQUEST_HEADERS, {
+        headers: [':method: POST', ':authority: example.com', ':scheme: https', ':path: /telemetry']
+      }),
+      event(ST.URL_REQUEST, 620, ET.HTTP_TRANSACTION_READ_RESPONSE_HEADERS, { headers: ['HTTP/1.1 204'] })
+    ]
+    const { exchanges, stats } = await parseNetLog(await writeNetlog(t, events))
+    assert.deepStrictEqual(exchanges, [])
+    assert.deepStrictEqual(stats, { exchanges: 0, dropped: { failed: 0, unparsable: 0, internalRequests: 1 } })
+  })
+
+  it('drops a not-an-origin initiator with a non-navigation request_type', async (t) => {
+    // spellcheck-dictionary style request: browser-issued ("not an origin"
+    // initiator) non-navigation request_type
+    const url = 'https://dictionary.example.com/list'
+    const events = [
+      event(ST.URL_REQUEST, 630, ET.REQUEST_ALIVE, { url }, PHASE.PHASE_BEGIN),
+      event(ST.URL_REQUEST, 630, ET.URL_REQUEST_START_JOB, { method: 'GET', url, initiator: 'not an origin', request_type: 'other' }, PHASE.PHASE_BEGIN),
+      event(ST.URL_REQUEST, 630, ET.HTTP_TRANSACTION_HTTP2_SEND_REQUEST_HEADERS, {
+        headers: [':method: GET', ':authority: dictionary.example.com', ':scheme: https', ':path: /list']
+      }),
+      event(ST.URL_REQUEST, 630, ET.HTTP_TRANSACTION_READ_RESPONSE_HEADERS, { headers: ['HTTP/1.1 200'] })
+    ]
+    const { exchanges, stats } = await parseNetLog(await writeNetlog(t, events))
+    assert.deepStrictEqual(exchanges, [])
+    assert.deepStrictEqual(stats, { exchanges: 0, dropped: { failed: 0, unparsable: 0, internalRequests: 1 } })
+  })
+
+  it('keeps a not-an-origin initiator main-frame request', async (t) => {
+    const url = 'https://example.com/refresh'
+    const events = [
+      event(ST.URL_REQUEST, 631, ET.REQUEST_ALIVE, { url }, PHASE.PHASE_BEGIN),
+      event(ST.URL_REQUEST, 631, ET.URL_REQUEST_START_JOB, { method: 'GET', url, initiator: 'not an origin', request_type: 'main frame' }, PHASE.PHASE_BEGIN),
+      event(ST.URL_REQUEST, 631, ET.HTTP_TRANSACTION_HTTP2_SEND_REQUEST_HEADERS, {
+        headers: [':method: GET', ':authority: example.com', ':scheme: https', ':path: /refresh']
+      }),
+      event(ST.URL_REQUEST, 631, ET.HTTP_TRANSACTION_READ_RESPONSE_HEADERS, { headers: ['HTTP/1.1 200'] })
+    ]
+    const { exchanges, stats } = await parseNetLog(await writeNetlog(t, events))
+    assert.deepStrictEqual(exchanges.map(e => e.url), [url])
+    assert.deepStrictEqual(stats, { exchanges: 1, dropped: { failed: 0, unparsable: 0, internalRequests: 0 } })
+  })
+
+  it('keeps a not-an-origin initiator request without a request_type', async (t) => {
+    const url = 'https://example.com/probe'
+    const events = [
+      event(ST.URL_REQUEST, 632, ET.REQUEST_ALIVE, { url }, PHASE.PHASE_BEGIN),
+      event(ST.URL_REQUEST, 632, ET.URL_REQUEST_START_JOB, { method: 'GET', url, initiator: 'not an origin' }, PHASE.PHASE_BEGIN),
+      event(ST.URL_REQUEST, 632, ET.HTTP_TRANSACTION_HTTP2_SEND_REQUEST_HEADERS, {
+        headers: [':method: GET', ':authority: example.com', ':scheme: https', ':path: /probe']
+      }),
+      event(ST.URL_REQUEST, 632, ET.HTTP_TRANSACTION_READ_RESPONSE_HEADERS, { headers: ['HTTP/1.1 200'] })
+    ]
+    const { exchanges, stats } = await parseNetLog(await writeNetlog(t, events))
+    assert.deepStrictEqual(exchanges.map(e => e.url), [url])
+    assert.deepStrictEqual(stats, { exchanges: 1, dropped: { failed: 0, unparsable: 0, internalRequests: 0 } })
+  })
+
+  it('keeps a request without isolation or anonymization keys', async (t) => {
+    const url = 'http://example.com/plain'
+    const events = [
+      event(ST.URL_REQUEST, 640, ET.REQUEST_ALIVE, { url }, PHASE.PHASE_BEGIN),
+      event(ST.URL_REQUEST, 640, ET.URL_REQUEST_START_JOB, { method: 'GET', url }, PHASE.PHASE_BEGIN),
+      event(ST.URL_REQUEST, 640, ET.HTTP_TRANSACTION_SEND_REQUEST_HEADERS, { line: 'GET /plain HTTP/1.1\r\n', headers: ['Host: example.com'] }),
+      event(ST.URL_REQUEST, 640, ET.HTTP_TRANSACTION_READ_RESPONSE_HEADERS, { headers: ['HTTP/1.1 200 OK'] })
+    ]
+    const { exchanges, stats } = await parseNetLog(await writeNetlog(t, events))
+    assert.deepStrictEqual(exchanges.map(e => e.url), [url])
+    assert.deepStrictEqual(stats, { exchanges: 1, dropped: { failed: 0, unparsable: 0, internalRequests: 0 } })
   })
 
   it('throws on a chunked h1 request (a streamed upload)', async (t) => {
@@ -543,5 +696,33 @@ describe('parseNetLog', () => {
       code: 'INVALID',
       message: 'netlog events contain a non-object entry'
     })
+  })
+})
+
+describe('isInternalRequest', () => {
+  it('matches a "null"-prefixed isolation or anonymization key, independently', () => {
+    assert.strictEqual(isInternalRequest({ network_isolation_key: 'null' }), true)
+    assert.strictEqual(isInternalRequest({ network_isolation_key: 'null null' }), true)
+    assert.strictEqual(isInternalRequest({ network_anonymization_key: 'null [internally: ...]' }), true)
+    // either key alone decides
+    assert.strictEqual(isInternalRequest({
+      network_isolation_key: 'https://example.com https://example.com',
+      network_anonymization_key: 'null https://example.com'
+    }), true)
+    assert.strictEqual(isInternalRequest({
+      network_isolation_key: 'https://example.com https://example.com',
+      network_anonymization_key: 'https://example.com https://example.com'
+    }), false)
+  })
+
+  it('matches a not-an-origin initiator only with a present non-navigation request_type', () => {
+    assert.strictEqual(isInternalRequest({ initiator: 'not an origin', request_type: 'other' }), true)
+    assert.strictEqual(isInternalRequest({ initiator: 'not an origin', request_type: 'main frame' }), false)
+    assert.strictEqual(isInternalRequest({ initiator: 'not an origin' }), false)
+  })
+
+  it('keeps requests without keys or initiator, and tolerates missing params', () => {
+    assert.strictEqual(isInternalRequest({}), false)
+    assert.strictEqual(isInternalRequest(undefined), false)
   })
 })

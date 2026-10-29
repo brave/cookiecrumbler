@@ -4,10 +4,21 @@
 // http.Request.Write output (request line, Host, User-Agent, Content-Length,
 // sorted headers, body) and SerializedResponse is Go's http.Response.Write
 // output (status line, Content-Length when known or Connection: close when
-// the length is unknown, sorted headers, still-content-encoded body).
+// the length is unknown, sorted headers, still-content-encoded body). Before
+// serialization, the Content-Security-Policy headers of HTML 200 responses
+// are seeded with a replay nonce so that wpr's replay-time script injection
+// is authorized without wpr's 'unsafe-inline' fallback (see csp.mjs).
 // Deliberate divergences from wpr record: a Content-Length logged on a
 // bodyless status is kept, where Go's resp.Write would drop it (see
-// declaredResponseLength).
+// declaredResponseLength); enforced CSP values are normalized for wpr's
+// parser (whitespace, keyword case, duplicate directives, comma-separated
+// policies become their own header entries); directives whose recorded
+// inline permissions a seeded nonce would revoke are mirrored into explicit
+// script-src-attr / style-src directives.
+
+import crypto from 'node:crypto'
+
+import { seedCspReplayNonce } from './csp.mjs'
 
 /** @typedef {import('./netlog/exchanges.mjs').Exchange} Exchange */
 /** @typedef {import('./netlog/http-headers.mjs').HeaderEntry} HeaderEntry */
@@ -145,7 +156,6 @@ const chunkedBody = (body) => {
  * followed h1 redirect: the browser never reads the redirect body, so the
  * recovered length is all the archive can frame the response by (see
  * isTruncatedHttp1Body).
- *
  * A logged length is declared even for bodyless statuses (1xx/204/304),
  * unlike Go's resp.Write: its ReadResponse zeroes the ContentLength field of
  * those statuses and its write path excludes the Content-Length header, so
@@ -335,7 +345,9 @@ const isTruncatedHttp1Body = (exchange) =>
 /**
  * Builds a WprGo archive object (see Archive in webpagereplay's archive.go)
  * from reconstructed exchanges. Fields follow the struct order so the output
- * matches archives written by wpr record.
+ * matches archives written by wpr record. Before serialization, the enforced
+ * Content-Security-Policy headers of HTML 200 responses are seeded with the
+ * replay nonce (see csp.mjs).
  *
  * Note: Certs is left empty; netlog-recorded archives cannot carry wpr-minted
  * certificates, so replay mints fresh ones per host (the check browser trusts
@@ -349,14 +361,17 @@ const isTruncatedHttp1Body = (exchange) =>
  * @param {number} [options.deterministicTimeSeedMs] time seed for the archive
  * @param {string} [options.metadata] free-form metadata stored in the
  *   archive; wpr-go replay targets are unaffected by it
+ * @param {string} [options.replayNonce] base64 CSP replay nonce; a fresh
+ *   random one is generated when omitted
  * @param {function({ code: string, url: string, message: string }): void} [options.onWarning]
  *   called for every dropped exchange
  * @returns {WprArchive}
  */
-export const archiveFromExchanges = (exchanges, negotiatedProtocols, { injectedScripts = {}, deterministicTimeSeedMs = 0, metadata = '', onWarning } = {}) => {
+export const archiveFromExchanges = (exchanges, negotiatedProtocols, { injectedScripts = {}, deterministicTimeSeedMs = 0, metadata = '', replayNonce = crypto.randomBytes(16).toString('base64'), onWarning } = {}) => {
+  const seeded = exchanges.map(exchange => ({ ...exchange, responseEntries: seedCspReplayNonce(exchange, replayNonce) }))
   /** @type {Map<string, Map<string, WprMessage[]>>} */
   const requests = new Map() // authority -> Map(url -> [message])
-  for (const exchange of exchanges) {
+  for (const exchange of seeded) {
     // Aborted transfers are dropped exactly where the browser itself fails
     // them; see isTruncatedHttp1Body.
     if (isTruncatedHttp1Body(exchange)) {

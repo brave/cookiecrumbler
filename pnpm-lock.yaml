@@ -198,6 +198,9 @@ importers:
       koa-compress:
         specifier: ^5.1.1
         version: 5.2.2
+      netlog2wpr:
+        specifier: workspace:*
+        version: link:packages/netlog2wpr
       openai:
         specifier: ^6.0.0
         version: 6.49.0(ws@8.22.0)(zod@4.6.7)

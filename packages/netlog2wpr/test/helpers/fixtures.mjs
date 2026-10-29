@@ -64,6 +64,21 @@ export const event = (sourceType, sourceId, type, params = {}, phase = PHASE.PHA
   params
 })
 
+// HTTP/2 request bytes written as TLS payload plaintext: connection preface
+// plus a HEADERS frame (HPACK bytes; the parser skips non-DATA frames) and a
+// DATA frame carrying the request body. Set preface to false to get bare
+// frames for extending a connection with further requests.
+export const h2SentBytes = (streamId, requestBody, { preface = true } = {}) => {
+  const headersFrame = Buffer.concat([
+    Buffer.from([0, 0, 5]), Buffer.from([0x1, 0x4]), Buffer.from([0, 0, 0, streamId]), Buffer.alloc(5)
+  ])
+  const dataFrame = Buffer.concat([
+    Buffer.from([0, 0, requestBody.length]), Buffer.from([0x0, 0x0]), Buffer.from([0, 0, 0, streamId]), requestBody
+  ])
+  const frames = Buffer.concat([headersFrame, dataFrame])
+  return preface ? Buffer.concat([Buffer.from('PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n'), frames]) : frames
+}
+
 export const writeNetlog = async (t, events, { format = 'json' } = {}) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cookiecrumbler-netlog-test-'))
   t.after(() => fs.rm(dir, { recursive: true, force: true }))

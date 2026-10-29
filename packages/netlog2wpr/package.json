@@ -1,0 +1,20 @@
+{
+  "name": "netlog2wpr",
+  "private": true,
+  "type": "module",
+  "license": "MPL-2.0",
+  "exports": {
+    ".": "./src/index.mjs"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.5",
+    "typescript": "6.0.3"
+  }
+}

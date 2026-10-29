@@ -64,6 +64,7 @@ jobs:
     - if: ${{ github.actor != 'dependabot[bot]' && github.actor != 'renovate[bot]' }}
       run: pnpm audit
     - run: pnpm run lint
+    - run: pnpm run typecheck
 
     - name: Setup Environment
       run: |

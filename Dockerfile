@@ -1,6 +1,6 @@
 # WprGo (WebPageReplay) builder stage
 # Pinned to a commit on the "cookiecrumbler" branch; bump this to invalidate the cache.
-FROM golang:1.27@sha256:f20d83a83e18dbd2a4714b8ffd4b30b287b6243962dd75608e86abcc63ba4efc AS wpr-builder
+FROM golang:1.27@sha256:2920bb124f1a2e12a1d39f0cab756ae0068441ee1da7655dec7f5e374944095b AS wpr-builder
 
 # https://github.com/brave-experiments/webpagereplay (cookiecrumbler branch)
 ARG WPR_GO_COMMIT=e1c683f26a53fa7923e9987d0d35fcbe081b65c3

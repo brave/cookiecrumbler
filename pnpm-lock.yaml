@@ -254,6 +254,15 @@ importers:
         specifier: 1.0.0
         version: 1.0.0
 
+  packages/netlog2wpr:
+    devDependencies:
+      '@types/node':
+        specifier: 26.6.5
+        version: 26.6.5
+      typescript:
+        specifier: 6.0.3
+        version: 6.0.3
+
 packages:
 
   '@actions/core@3.0.1':

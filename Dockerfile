@@ -44,6 +44,7 @@ RUN useradd --create-home --uid 1000 --shell /bin/bash node && \
 USER node
 WORKDIR /app
 COPY --chown=node:node package.json pnpm-lock.yaml pnpm-workspace.yaml /app
+COPY --chown=node:node packages/netlog2wpr/package.json /app/packages/netlog2wpr/
 RUN pnpm install --frozen-lockfile
 RUN pnpm run rebrowser-patches
 COPY --chown=node:node . /app

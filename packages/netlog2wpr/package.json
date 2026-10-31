@@ -10,7 +10,7 @@
     "node": ">=24"
   },
   "scripts": {
-    "test": "node --test",
+    "test": "node --test test/*.test.mjs",
     "typecheck": "tsc -p tsconfig.json"
   },
   "devDependencies": {

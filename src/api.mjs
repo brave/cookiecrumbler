@@ -5,6 +5,7 @@ import { existsSync } from 'fs'
 import path from 'path'
 import process from 'process'
 import os from 'os'
+import { STATUS_CODES } from 'node:http'
 
 import './instrument.mjs'
 import Koa from 'koa'
@@ -12,7 +13,7 @@ import { bodyParser } from '@koa/bodyparser'
 import compress from 'koa-compress'
 import * as Sentry from '@sentry/node'
 import Router from '@koa/router'
-import { Semaphore, withTimeout } from 'async-mutex'
+import { E_TIMEOUT, Semaphore, withTimeout } from 'async-mutex'
 
 import { checkPage } from './lib.mjs'
 import { getFilteredKnownDevices } from './setupUtil.mjs'
@@ -30,16 +31,24 @@ const semaphore = withTimeout(new Semaphore(maxConcurrency), maxConcurrencyWaitM
 const browserBinaryPath = process.argv[2] || '/usr/bin/brave'
 const port = process.argv[3] || 3000
 
-if (!existsSync(browserBinaryPath)) {
-  console.error(`Path ${browserBinaryPath} does not exist.`)
-  console.error('Please specify an alternative on the command line.')
-  process.exit(-1)
-}
+export const app = new Koa()
+app.use(async (ctx, next) => {
+  try {
+    await next()
+  } catch (error) {
+    if (ctx.headerSent || !ctx.writable) {
+      throw error
+    }
 
-console.log(`Browser binary: ${browserBinaryPath}`)
-console.log(`Port: ${port}`)
+    const err = error instanceof Error ? error : new Error('Unhandled request error', { cause: error })
+    const status = err.status || err.statusCode
+    ctx.status = typeof status === 'number' && status >= 400 && STATUS_CODES[status] ? status : 500
+    ctx.type = 'json'
+    ctx.body = { error: STATUS_CODES[ctx.status], identified: false }
+    ctx.app.emit('error', err, ctx)
+  }
+})
 
-const app = new Koa()
 // Raised json limit: WprGo replay archives are uploaded base64-encoded in the JSON body
 app.use(bodyParser({ jsonLimit: '200mb' }))
 app.use(compress())
@@ -253,7 +262,7 @@ router.post('/check', async (ctx) => {
     ctx.body = JSON.stringify(report)
     ctx.response.type = 'json'
   } catch (error) {
-    if (error.message === 'timeout') {
+    if (error === E_TIMEOUT) {
       ctx.status = 429
       ctx.body = { error: 'Too Many Requests: server is at capacity' }
       return
@@ -265,4 +274,14 @@ router.post('/check', async (ctx) => {
 app.use(router.routes())
 app.use(router.allowedMethods())
 
-app.listen(port)
+if (import.meta.main) {
+  if (!existsSync(browserBinaryPath)) {
+    console.error(`Path ${browserBinaryPath} does not exist.`)
+    console.error('Please specify an alternative on the command line.')
+    process.exit(-1)
+  }
+
+  console.log(`Browser binary: ${browserBinaryPath}`)
+  console.log(`Port: ${port}`)
+  app.listen(port)
+}

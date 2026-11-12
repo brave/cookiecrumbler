@@ -22,10 +22,26 @@ import {
 
 const LIST_CATALOG_COMPONENT_ID = 'gkboaolpopklhgplhaaiboijnklogmbc'
 // Filter list components that never register or download on desktop builds:
-// their payloads cannot be shipped and they must not block provisioning.
+// their catalog entries are scoped to other platforms (`platforms`, see
+// FilterListCatalogEntry::SupportsCurrentPlatform) or marked `hidden`, so
+// brave skips them. Force-provision their payloads anyway by dropping those
+// keys, and drop `default_enabled` as well so they ship disabled by default
+// (an absent key means disabled; delete is a no-op for keys a newer entry no
+// longer has). The pre-session flip below still enables all lists, including
+// these, so their payloads get downloaded.
 const NON_DESKTOP_LIST_COMPONENT_IDS = new Set([
   'eaokkjgnlhceblfhbhpeoebmfldocmnc' // Brave IOS-Specific Filters
 ])
+
+const forceProvisionNonDesktopLists = entries => {
+  for (const entry of entries) {
+    if (NON_DESKTOP_LIST_COMPONENT_IDS.has(entry.list_text_component.component_id)) {
+      delete entry.hidden
+      delete entry.platforms
+      delete entry.default_enabled
+    }
+  }
+}
 
 // Click every "Check for update" button on brave://components until every
 // watched component reports a completed update. The button set is re-read
@@ -110,6 +126,7 @@ const forceDownloadCatalogLists = async ({ args, tmpProfile }) => {
   const catalogVersionDir = getExtensionVersion(catalogDir)
   const catalogPath = path.join(catalogDir, catalogVersionDir, 'list_catalog.json')
   const entries = JSON.parse(await fs.readFile(catalogPath, 'utf8'))
+  forceProvisionNonDesktopLists(entries)
   // Record the shipped defaults (keyed by component id). Entries without a
   // default_enabled key restore to absent, since JSON.stringify drops
   // undefined values. Also collect the component ids that must end up
@@ -118,9 +135,7 @@ const forceDownloadCatalogLists = async ({ args, tmpProfile }) => {
     entries.map(entry => [entry.list_text_component.component_id, entry.default_enabled])
   )
   const expectedIds = new Set(
-    entries
-      .map(entry => entry.list_text_component.component_id)
-      .filter(componentId => !NON_DESKTOP_LIST_COMPONENT_IDS.has(componentId))
+    entries.map(entry => entry.list_text_component.component_id)
   )
   await fs.writeFile(catalogPath, JSON.stringify(entries.map(entry => ({ ...entry, default_enabled: true }))))
 
@@ -144,6 +159,7 @@ const forceDownloadCatalogLists = async ({ args, tmpProfile }) => {
   const shippedCatalogVersionDir = getExtensionVersion(catalogDir)
   const shippedCatalogPath = path.join(catalogDir, shippedCatalogVersionDir, 'list_catalog.json')
   const shippedCatalog = JSON.parse(await fs.readFile(shippedCatalogPath, 'utf8'))
+  forceProvisionNonDesktopLists(shippedCatalog)
   const restoredCatalog = shippedCatalog.map(entry => ({
     ...entry,
     default_enabled: entry.list_text_component.component_id in originalDefaults

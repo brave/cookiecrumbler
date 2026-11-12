@@ -11,7 +11,7 @@ RUN git clone https://github.com/brave-experiments/webpagereplay.git /webpagerep
     CGO_ENABLED=0 go build -o /wpr ./src/wpr.go
 
 # Base application image
-FROM ghcr.io/pnpm/pnpm:12.16.1@sha256:33081d3d2c96ba582d316cfd630f0f43961d9c60ff919b50edd1835a1462976b
+FROM ghcr.io/pnpm/pnpm:12.20.0@sha256:6999b0d11d81065126ef0a226705b9d22eb9b552830d782505043d280c46ff00
 
 ARG FULL_CACHEBUST=0
 

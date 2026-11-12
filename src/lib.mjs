@@ -1,6 +1,6 @@
 'use strict'
 
-import { existsSync, readdirSync, mkdirSync, writeFileSync, constants as fsConstants } from 'fs'
+import { constants as fsConstants } from 'fs'
 import fs from 'fs/promises'
 import os from 'os'
 import path from 'path'
@@ -22,7 +22,7 @@ import vanillaPuppeteer, { KnownDevices } from 'puppeteer-core'
 import userAgentOverride from './plugins/user-agent-override.mjs'
 
 import { puppeteerConfigForArgs } from './puppeteer.mjs'
-import { templateProfilePathForArgs, parseListCatalogComponentIds, isValidChromeComponentId, isKeeplistedComponentId, getExtensionVersion, getOptionalDefaultComponentIds, replaceVersion, toggleAdblocklists, proxyUrlWithAuth, checkAllComponentsRegistered, fixupBundleStackTrace, getBundlePaths } from './setupUtil.mjs'
+import { templateProfilePathForArgs, toggleAdblocklists, proxyUrlWithAuth, fixupBundleStackTrace, getBundlePaths } from './setupUtil.mjs'
 import { generateRandomToken } from './util.mjs'
 
 import { cookieNoticeClassifier, browserNoticeClassifier } from './text-classification.mjs'
@@ -373,93 +373,4 @@ export const checkPage = async (args) => {
   return report
 }
 
-export const prepareProfile = async (args) => {
-  const tmpProfile = await fs.mkdtemp(path.join(os.tmpdir(), 'cookiecrumbler-setup-profile-'))
-  const templateProfile = templateProfilePathForArgs(args)
-
-  if (existsSync(templateProfile)) {
-    // Template profile already exists; return early
-    console.log('profile directory already exists')
-    return
-  } else {
-    // Create template profile directory
-    await fs.mkdir(templateProfile)
-  }
-
-  await fetch('https://publicsuffix.org/list/public_suffix_list.dat')
-    .then(resp => resp.text())
-    .then(body => fs.writeFile(path.join(import.meta.dirname, '..', 'public_suffix_list.dat'), body))
-
-  console.log('Performing initial profile setup...')
-  const puppeteerArgs = await puppeteerConfigForArgs({ ...args, pathForProfile: tmpProfile })
-
-  const browser = await vanillaPuppeteer.launch(puppeteerArgs)
-
-  const page = await browser.newPage()
-  // Give the browser some time to register/download adblock components
-  console.log('Wait until all components are registered')
-  await checkAllComponentsRegistered(page)
-
-  console.log('Updating Brave components')
-  await page.goto('brave://components', { waitUntil: 'domcontentloaded' })
-  const buttons = await page.$$('.button-check-update')
-  for (const button of buttons) {
-    const buttonId = await page.evaluate(el => el.getAttribute('id'), button)
-    if (buttonId) {
-      console.log('Updating component:', buttonId)
-      await button.click()
-      await setTimeout(100) // Wait for 100ms between clicks
-    }
-  }
-
-  console.log('Waiting for components to update...')
-  await setTimeout(500)
-  await page.waitForFunction(() => {
-    const elements = document.querySelectorAll('span[id^="status-"]')
-    return Array.from(elements)
-      .map(el => el.innerText.trim())
-      .filter(text => text !== '')
-      .every(spanText => ['Component already up to date', 'Up-to-date', 'Component updated'].includes(spanText))
-  }, { timeout: 60000 })
-  console.log('Components updated')
-
-  await page.close()
-
-  await browser.close()
-
-  // Clean up stale Singleton Lock
-  await fs.rm(`${tmpProfile}/SingletonLock`, { force: true })
-  // Clean up crx cache
-  await fs.rm(`${tmpProfile}/component_crx_cache`, { force: true, recursive: true })
-
-  const adblockComponents = parseListCatalogComponentIds({ profileDir: tmpProfile })
-
-  for (const fileName of readdirSync(tmpProfile)) {
-    // check if valid component id and not in keeplist
-    if (isValidChromeComponentId({ id: fileName }) && !isKeeplistedComponentId({ id: fileName, additionalComponentList: adblockComponents })) {
-      console.log('patching component: ', fileName)
-      const extensionDir = path.join(tmpProfile, fileName)
-      const versionDir = getExtensionVersion(extensionDir)
-      const srcManifest = path.join(extensionDir, versionDir, 'manifest.json')
-      const destPath = path.join(templateProfile, fileName, '999.999')
-      replaceVersion({ fileName: srcManifest })
-      mkdirSync(destPath, { recursive: true })
-      if (fileName === 'gkboaolpopklhgplhaaiboijnklogmbc') {
-        // copy List Catalog files after modifying version
-        await fs.cp(path.join(extensionDir, versionDir), destPath, { recursive: true, mode: fsConstants.COPYFILE_FICLONE })
-      } else {
-        // only copy the manifest for all other components
-        await fs.cp(srcManifest, path.join(destPath, 'manifest.json'), { mode: fsConstants.COPYFILE_FICLONE })
-      }
-    } else {
-      // copy all other files in profile directory, as well as keeplisted components
-      await fs.cp(`${tmpProfile}/${fileName}`, `${templateProfile}/${fileName}`, { recursive: true, mode: fsConstants.COPYFILE_FICLONE })
-    }
-  }
-
-  const optionalDefaultComponents = getOptionalDefaultComponentIds({ profileDir: tmpProfile })
-  writeFileSync(path.join(import.meta.dirname, '..', 'adblock_lists.json'), JSON.stringify(optionalDefaultComponents, null, 2))
-
-  await fs.rm(tmpProfile, { recursive: true })
-  console.log('Done. Profile has been prepared for future use.')
-}
+export { prepareProfile } from './prepareProfile.mjs'

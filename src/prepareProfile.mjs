@@ -10,11 +10,9 @@ import vanillaPuppeteer from 'puppeteer-core'
 
 import { puppeteerConfigForArgs } from './puppeteer.mjs'
 import {
-  CATALOG_FILE_NAMES,
   checkAllComponentsRegistered,
   getExtensionVersion,
   getOptionalDefaultComponentIds,
-  INCLUDE_REGIONAL_LISTS,
   isValidChromeComponentId,
   isKeeplistedComponentId,
   parseListCatalogComponentIds,
@@ -100,36 +98,31 @@ const waitForRegistrations = async (page, expectedIds, { maxAttempts = 60, label
 
 // Check runs block the component updater with an invalid URL, so list
 // payloads that are not shipped in the template can never be fetched at
-// runtime. Force-download every list in the catalogs: temporarily flip
-// default_enabled to true for all entries in the catalog files (so the
-// updater registers and records every list as installed), let it fetch all
-// payloads, then restore the original catalog payloads so the template
-// ships proper defaults. The installation state recorded by the updater is
-// what makes lists activatable from disk at runtime; shipping payload files
-// alone is not sufficient.
+// runtime. Force-download every list in the catalog: temporarily flip
+// default_enabled to true for all entries (so the updater registers and
+// records every list as installed), let it fetch all payloads, then restore
+// the original catalog payload so the template ships proper defaults. The
+// installation state recorded by the updater is what makes lists
+// activatable from disk at runtime; shipping payload files alone is not
+// sufficient.
 const forceDownloadCatalogLists = async ({ args, tmpProfile }) => {
   const catalogDir = path.join(tmpProfile, LIST_CATALOG_COMPONENT_ID)
   const catalogVersionDir = getExtensionVersion(catalogDir)
-  const catalogPaths = CATALOG_FILE_NAMES.map(fileName => path.join(catalogDir, catalogVersionDir, fileName))
-  // Record the shipped defaults per catalog (keyed by component id). Entries
-  // without a default_enabled key restore to absent, since JSON.stringify
-  // drops undefined values. Also collect the component ids that must end up
+  const catalogPath = path.join(catalogDir, catalogVersionDir, 'list_catalog.json')
+  const entries = JSON.parse(await fs.readFile(catalogPath, 'utf8'))
+  // Record the shipped defaults (keyed by component id). Entries without a
+  // default_enabled key restore to absent, since JSON.stringify drops
+  // undefined values. Also collect the component ids that must end up
   // registered and updated in the forced session.
-  const originalDefaults = []
-  const expectedIds = new Set()
-  for (const catalogPath of catalogPaths) {
-    const entries = JSON.parse(await fs.readFile(catalogPath, 'utf8'))
-    originalDefaults.push(Object.fromEntries(
-      entries.map(entry => [entry.list_text_component.component_id, entry.default_enabled])
-    ))
-    for (const entry of entries) {
-      const componentId = entry.list_text_component.component_id
-      if (!NON_DESKTOP_LIST_COMPONENT_IDS.has(componentId)) {
-        expectedIds.add(componentId)
-      }
-    }
-    await fs.writeFile(catalogPath, JSON.stringify(entries.map(entry => ({ ...entry, default_enabled: true }))))
-  }
+  const originalDefaults = Object.fromEntries(
+    entries.map(entry => [entry.list_text_component.component_id, entry.default_enabled])
+  )
+  const expectedIds = new Set(
+    entries
+      .map(entry => entry.list_text_component.component_id)
+      .filter(componentId => !NON_DESKTOP_LIST_COMPONENT_IDS.has(componentId))
+  )
+  await fs.writeFile(catalogPath, JSON.stringify(entries.map(entry => ({ ...entry, default_enabled: true }))))
 
   console.log('Force-downloading all catalog lists...')
   // Same flags as the runtime flow (puppeteerConfigForArgs), except the
@@ -138,29 +131,27 @@ const forceDownloadCatalogLists = async ({ args, tmpProfile }) => {
   const forcedArgs = await puppeteerConfigForArgs({ ...args, pathForProfile: tmpProfile })
   const forcedBrowser = await vanillaPuppeteer.launch(forcedArgs)
   const forcedPage = await forcedBrowser.newPage()
-  // The flipped catalogs enable every list at once, so all of their
+  // The flipped catalog enables every list at once, so all of its
   // components are expected to register and to finish updating.
   await waitForRegistrations(forcedPage, expectedIds, { label: 'Forced download' })
   await updateComponents(forcedPage, { expectedIds: [...expectedIds] })
   await forcedPage.close()
   await forcedBrowser.close()
 
-  // Restore the original catalog payloads. If the updater fetched a newer
+  // Restore the original catalog payload. If the updater fetched a newer
   // catalog version during the forced session, write the original defaults
   // into that newest version dir so the template ships proper defaults.
   const shippedCatalogVersionDir = getExtensionVersion(catalogDir)
-  await Promise.all(CATALOG_FILE_NAMES.map(async (fileName, index) => {
-    const shippedCatalogPath = path.join(catalogDir, shippedCatalogVersionDir, fileName)
-    const shippedCatalog = JSON.parse(await fs.readFile(shippedCatalogPath, 'utf8'))
-    const restoredCatalog = shippedCatalog.map(entry => ({
-      ...entry,
-      default_enabled: entry.list_text_component.component_id in originalDefaults[index]
-        ? originalDefaults[index][entry.list_text_component.component_id]
-        : entry.default_enabled
-    }))
-    await fs.writeFile(shippedCatalogPath, JSON.stringify(restoredCatalog))
+  const shippedCatalogPath = path.join(catalogDir, shippedCatalogVersionDir, 'list_catalog.json')
+  const shippedCatalog = JSON.parse(await fs.readFile(shippedCatalogPath, 'utf8'))
+  const restoredCatalog = shippedCatalog.map(entry => ({
+    ...entry,
+    default_enabled: entry.list_text_component.component_id in originalDefaults
+      ? originalDefaults[entry.list_text_component.component_id]
+      : entry.default_enabled
   }))
-  console.log(`Restored catalog defaults (${CATALOG_FILE_NAMES.length} catalogs)`)
+  await fs.writeFile(shippedCatalogPath, JSON.stringify(restoredCatalog))
+  console.log('Restored catalog defaults')
 }
 
 // Assemble the template profile from the provisioned setup profile: keep only
@@ -190,11 +181,6 @@ const buildTemplateProfile = async ({ args, tmpProfile }) => {
         replaceVersion({ fileName: srcManifest })
         mkdirSync(destPath, { recursive: true })
         await fs.cp(path.join(extensionDir, versionDir), destPath, { recursive: true, mode: fsConstants.COPYFILE_FICLONE })
-        if (!INCLUDE_REGIONAL_LISTS) {
-          // Regional lists are disabled: strip the additional-engine catalog
-          // from the shipped template so list_catalog.json alone governs.
-          await fs.rm(path.join(destPath, 'regional_catalog.json'), { force: true })
-        }
         continue
       }
       // Only adblock components (and Brave User Agent, see keeplist) are

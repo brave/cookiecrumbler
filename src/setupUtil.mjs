@@ -1,6 +1,6 @@
 import fs from 'fs/promises'
 import path from 'path'
-import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, readFileSync, readdirSync, writeFileSync } from 'fs'
 import { setTimeout } from 'timers/promises'
 import { KnownDevices } from 'puppeteer-core'
 import ErrorStackParser from 'error-stack-parser'
@@ -39,44 +39,26 @@ export const replaceVersion = ({ fileName }) => {
   writeFileSync(fileName, modifiedManifest)
 }
 
-// The catalog component ships two catalogs: list_catalog.json drives the
-// default filter lists engine and regional_catalog.json the additional
-// engine. Regional entries are currently a subset of the list_catalog
-// entries. Regional lists are not exercised by the tests yet and
-// provisioning all of them measurably slows setup down, so they are
-// disabled by default: setup strips the regional catalog from the template
-// and runtime removes it from the working profile, leaving list_catalog.json
-// alone in charge. Set COOKIECRUMBLER_REGIONAL_LISTS=1 to provision, ship
-// and require them instead.
-export const INCLUDE_REGIONAL_LISTS = process.env.COOKIECRUMBLER_REGIONAL_LISTS === '1'
-
-export const CATALOG_FILE_NAMES = INCLUDE_REGIONAL_LISTS
-  ? ['list_catalog.json', 'regional_catalog.json']
-  : ['list_catalog.json']
-
-const readListCatalogs = ({ profileDir }) => {
+// gkboaolpopklhgplhaaiboijnklogmbc/1.0.60/list_catalog.json
+const getListCatalog = ({ profileDir }) => {
   const extensionDir = path.join(profileDir, 'gkboaolpopklhgplhaaiboijnklogmbc')
   const versionDir = getExtensionVersion(extensionDir)
-  const catalogDir = path.join(extensionDir, versionDir)
-  const catalogs = CATALOG_FILE_NAMES
-    .filter(fileName => existsSync(path.join(catalogDir, fileName)))
-    .map(fileName => ({ fileName, entries: JSON.parse(readFileSync(path.join(catalogDir, fileName), 'utf8')) }))
-  return { catalogDir, catalogs }
+  const data = readFileSync(path.join(extensionDir, versionDir, 'list_catalog.json'), 'utf8')
+  return JSON.parse(data)
 }
 
 export const parseListCatalogComponentIds = ({ profileDir }) => {
-  const { catalogs } = readListCatalogs({ profileDir })
+  const catalog = getListCatalog({ profileDir })
 
   // Extract the component_id values
-  return [...new Set(catalogs.flatMap(({ entries }) => entries.map(item => item.list_text_component.component_id)))]
+  return catalog.map(item => item.list_text_component.component_id)
 }
 
 export const getOptionalDefaultComponentIds = ({ profileDir }) => {
-  const { catalogs } = readListCatalogs({ profileDir })
+  const catalog = getListCatalog({ profileDir })
 
   // Extract the component_id values
-  return catalogs
-    .flatMap(({ entries }) => entries)
+  return catalog
     .filter(item => item.list_text_component.component_id !== 'iodkpdagapdfkphljnddpjlldadblomo' && (item.default_enabled === true))
     .reduce((acc, item) => {
       acc[item.list_text_component.component_id] = item.title
@@ -108,25 +90,13 @@ const patchListCatalog = (catalogPath, adblockLists) => {
 }
 
 export const toggleAdblocklists = (listCatalogPath, adblockLists) => {
-  // Patch the working profile's catalogs. A missing list_catalog.json is fatal;
-  // a missing regional catalog only fails when COOKIECRUMBLER_REGIONAL_LISTS=1.
-  const catalogDir = path.dirname(listCatalogPath)
-  const regionalCatalogPath = path.join(catalogDir, 'regional_catalog.json')
-  if (!INCLUDE_REGIONAL_LISTS) {
-    // Regional lists are disabled at runtime (e.g. provisioned during setup
-    // only): strip the additional-engine catalog from the working profile so
-    // list_catalog.json alone governs.
-    rmSync(regionalCatalogPath, { force: true })
-  } else if (!existsSync(regionalCatalogPath)) {
-    throw new Error('COOKIECRUMBLER_REGIONAL_LISTS=1 but the template profile is missing the regional catalog; rerun setup with COOKIECRUMBLER_REGIONAL_LISTS=1')
-  }
+  // Patch list_catalog.json in the working profile; it drives the default
+  // filter lists engine. A missing catalog means a broken template and
+  // must fail loudly.
   if (!existsSync(listCatalogPath)) {
     throw new Error(`Broken template profile: missing ${listCatalogPath}`)
   }
   patchListCatalog(listCatalogPath, adblockLists)
-  if (INCLUDE_REGIONAL_LISTS) {
-    patchListCatalog(regionalCatalogPath, adblockLists)
-  }
 }
 
 export const proxyUrlWithAuth = (proxyHost) => {

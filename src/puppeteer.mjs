@@ -32,11 +32,13 @@ const WPR_DISABLED_FEATURES = [
 ]
 
 /**
- * Non-resolving URL used for check requests so the browser cannot fetch
- * component updates. (.invalid is a reserved TLD that never resolves.)
+ * Non-resolving URL used for check requests to override browser services
+ * (component updates, stats/P3A endpoints) so the browser cannot reach them
+ * even when --allow-brave-component-update is set.
+ * (.invalid is a reserved TLD that never resolves.)
  * Setup must keep default
  */
-export const INVALID_COMPONENT_UPDATER_URL = 'https://localhost.invalid/'
+export const INVALID_SERVICE_URL = 'https://localhost.invalid/'
 
 const mergedDisableFeatures = (requestedFeatures, extraDisabledFeatures = []) => {
   const requestedAllowedFeatures = Array.isArray(requestedFeatures)
@@ -64,15 +66,17 @@ export const puppeteerConfigForArgs = async (args) => {
     headless: !(args.interactive ?? false)
   }
 
-  // Check requests only: override the component updater so Brave cannot
-  // download updates at all.
-  // Do not use --disable-component-update for this: since Brave nightly
-  // 1.101.40 it also suppresses the initial registration of components,
-  // which breaks profile setup. The invalid URL alone reliably prevents
-  // any component download during check requests.
+  // Check requests only: override the component updater and telemetry endpoints
+  // so Brave cannot reach them. Do not use --disable-component-update for this:
+  // since Brave nightly 1.101.40 it also suppresses the initial registration of
+  // components, which breaks profile setup. The invalid URL alone reliably
+  // prevents any component download during check requests.
   // Setup must not set invalidateComponentUpdater.
   if (args.invalidateComponentUpdater) {
-    puppeteerArgs.args.push(`--component-updater=url-source=${INVALID_COMPONENT_UPDATER_URL}`)
+    puppeteerArgs.args.push(`--component-updater=url-source=${INVALID_SERVICE_URL}`)
+    puppeteerArgs.args.push(`--brave-stats-updater-server=${INVALID_SERVICE_URL}`)
+    puppeteerArgs.args.push(`--p3a-star-randomness-host=${INVALID_SERVICE_URL}`)
+    puppeteerArgs.args.push(`--p3a-constellation-upload-host=${INVALID_SERVICE_URL}`)
   }
 
   if (args.wprGoPorts !== undefined) {

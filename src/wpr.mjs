@@ -24,8 +24,8 @@ const appRoot = path.join(import.meta.dirname, '..')
 export const wprGoBinaryPath = existsSync(path.join(appRoot, 'wpr')) ? path.join(appRoot, 'wpr') : '/usr/local/bin/wpr'
 const wprGoAssetsDir = existsSync(path.join(appRoot, 'webpagereplay')) ? path.join(appRoot, 'webpagereplay') : '/usr/local/share/webpagereplay'
 
-// Upper bound for decompressed WprGo archives, guarding against gzip bombs
-const MAX_ARCHIVE_BYTES = 100 * 1024 * 1024
+// Upper bound for decompressed WprGo archives
+const MAX_ARCHIVE_BYTES = 300 * 1024 * 1024
 
 // wpr's "DO NOT CHANGE" ready stdout signal
 const WPR_READY_LINE_RE = /^Starting server on (https?):\/\/.*:(\d+)$/
@@ -37,6 +37,9 @@ export class WprGoError extends Error {}
 // they each hold several copies of the data in memory, so running more than
 // one at a time can exhaust the heap and abort the process. The queue holds
 // only pending waiters; the conversion itself runs in a dedicated worker.
+// No separate queue bound is needed: conversions run inside the request
+// semaphore section (stop() is called while a slot is held), so pending
+// conversions are bounded by maxConcurrency by construction.
 let archiveConversionQueue = Promise.resolve()
 const runArchiveConversionExclusive = (fn) => {
   const result = archiveConversionQueue.then(fn)
@@ -55,6 +58,11 @@ const runArchiveConversionExclusive = (fn) => {
 // stay uncapped.
 const NETLOG_WORKER_HEAP_MB = parseInt(process.env.NETLOG_WORKER_HEAP_MB) || 768
 
+// Wall-clock bound for one conversion, so a stuck worker cannot hold the
+// conversion queue (and its request's semaphore slot) forever. Generous next
+// to the seconds-long parse of a netlog near the cap.
+const NETLOG_CONVERSION_TIMEOUT_SECONDS = parseInt(process.env.NETLOG_CONVERSION_TIMEOUT_SECONDS) || 120
+
 // Spawns a fresh worker per conversion (~10ms against a seconds-long parse),
 // so there is no pool lifecycle and nothing lingers afterwards.
 const buildArchiveInWorker = (netlogPath, options) => new Promise((resolve, reject) => {
@@ -62,14 +70,24 @@ const buildArchiveInWorker = (netlogPath, options) => new Promise((resolve, reje
     resourceLimits: { maxOldGenerationSizeMb: NETLOG_WORKER_HEAP_MB, stackSizeMb: 8 }
   })
 
+  const timeoutAbort = new AbortController()
   let settled = false
   const finish = (fn, value) => {
     if (settled) return
     settled = true
+    timeoutAbort.abort()
     worker.removeAllListeners()
     fn(value)
     worker.terminate().catch(() => {})
   }
+
+  setTimeout(
+    NETLOG_CONVERSION_TIMEOUT_SECONDS * 1000,
+    undefined,
+    { ref: false, signal: timeoutAbort.signal }
+  ).then(() => {
+    finish(reject, new WprGoError(`netlog conversion timed out after ${NETLOG_CONVERSION_TIMEOUT_SECONDS} seconds`))
+  }, () => {})
 
   worker.once('message', ({ ok, gz, stats, name, code, message }) => {
     if (ok) {

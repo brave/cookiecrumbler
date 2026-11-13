@@ -15,6 +15,7 @@ import { Worker } from 'node:worker_threads'
 
 import { isValidHttpUrl } from './util.mjs'
 import { createRecordingContext } from 'netlog2wpr'
+import { NETLOG_CAP_MB, MAX_ARCHIVE_BYTES } from './netlogConfig.mjs'
 
 const gunzip = promisify(zlib.gunzip)
 
@@ -23,9 +24,6 @@ const gunzip = promisify(zlib.gunzip)
 const appRoot = path.join(import.meta.dirname, '..')
 export const wprGoBinaryPath = existsSync(path.join(appRoot, 'wpr')) ? path.join(appRoot, 'wpr') : '/usr/local/bin/wpr'
 const wprGoAssetsDir = existsSync(path.join(appRoot, 'webpagereplay')) ? path.join(appRoot, 'webpagereplay') : '/usr/local/share/webpagereplay'
-
-// Upper bound for decompressed WprGo archives
-const MAX_ARCHIVE_BYTES = 300 * 1024 * 1024
 
 // wpr's "DO NOT CHANGE" ready stdout signal
 const WPR_READY_LINE_RE = /^Starting server on (https?):\/\/.*:(\d+)$/
@@ -48,15 +46,17 @@ const runArchiveConversionExclusive = (fn) => {
 }
 
 // Heap ceiling for the netlog-parsing worker. The parser accumulates every
-// event plus rebuilt response bodies in memory; capping the worker's V8 heap
-// turns an out-of-memory abort into a failed request. Conversions are
-// serialized by runArchiveConversionExclusive, so this is a global peak bound and
-// may exceed the per-slot concurrency budget. 768MB keeps ordinary recordings
-// well clear of the cap; a netlog near the 300MB browser cap can still exceed
-// it (parsed events alone expand well beyond the file size) and then fails
-// cleanly instead of aborting the process. Buffers are external memory and
-// stay uncapped.
-const NETLOG_WORKER_HEAP_MB = parseInt(process.env.NETLOG_WORKER_HEAP_MB) || 768
+// event plus rebuilt response bodies in memory; a netlog at the cap expands
+// to roughly 2-3x its size as parsed JS objects, plus the archive object and
+// its JSON string. The default scales with the netlog cap (0.9 x cap x 3,
+// 1GB floor) and keeps ordinary recordings well clear; an over-large netlog
+// still fails cleanly with ERR_WORKER_OUT_OF_MEMORY. Capping the worker's V8
+// heap turns an out-of-memory abort into a failed request. Conversions are
+// serialized by runArchiveConversionExclusive, so this is a global peak bound
+// and may exceed the per-slot concurrency budget. Buffers are external memory
+// and stay uncapped.
+const DEFAULT_NETLOG_WORKER_HEAP_MB = Math.max(1024, Math.ceil(NETLOG_CAP_MB * 0.9 * 3))
+const NETLOG_WORKER_HEAP_MB = parseInt(process.env.NETLOG_WORKER_HEAP_MB) || DEFAULT_NETLOG_WORKER_HEAP_MB
 
 // Wall-clock bound for one conversion, so a stuck worker cannot hold the
 // conversion queue (and its request's semaphore slot) forever. Generous next

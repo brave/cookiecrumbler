@@ -20,6 +20,7 @@ import { Semaphore, withTimeout } from 'async-mutex'
 
 import { checkPage } from './lib.mjs'
 import { getFilteredKnownDevices, parseListCatalogComponentIds } from './setupUtil.mjs'
+import { MAX_ARCHIVE_BYTES } from './netlogConfig.mjs'
 import { VIEWPORT_PRESETS, REQUEST_DISABLE_FEATURES_ALLOWLIST } from './puppeteer.mjs'
 import { createCheckRequestSchema } from './schemas/check.mjs'
 import { validateBody } from './validate.mjs'
@@ -67,7 +68,7 @@ export const createApp = ({ browserBinaryPath }) => {
 
   const app = new Koa()
   // Raised json limit: WprGo replay archives are uploaded base64-encoded in the JSON body
-  app.use(bodyParser({ jsonLimit: '200mb' }))
+  app.use(bodyParser({ jsonLimit: Math.ceil(MAX_ARCHIVE_BYTES * 1.3) }))
   // Z_SYNC_FLUSH flushes the compressor on every write, so streamed bodies
   // arrive incrementally instead of buffering until the stream ends.
   // threshold 0 keeps even tiny bodies compressed; brotli stays off (slower

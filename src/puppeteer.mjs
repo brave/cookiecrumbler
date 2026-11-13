@@ -9,7 +9,12 @@ export const VIEWPORT_PRESETS = {
 const DEFAULT_DISABLED_FEATURES = [
   'BraveAdblockCookieListDefault',
   'BraveAdblockMobileNotificationsListDefault',
-  'AdblockDATCache'
+  'AdblockDATCache',
+  'HistoryEmbeddings',
+  'PreloadMediaEngagementData',
+  'OmniboxOnDeviceHeadProviderIncognito',
+  'OmniboxOnDeviceHeadProviderNonIncognito',
+  'QueryFilterComponent'
 ]
 
 export const REQUEST_DISABLE_FEATURES_ALLOWLIST = [

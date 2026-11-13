@@ -16,6 +16,17 @@ export const templateProfilePathForArgs = ({ pathForProfile }) => {
   return templateProfile
 }
 
+// Create an empty NTP sponsored images component directory (campaigns.json
+// with no campaigns) inside the profile and return its path. Pointing Brave
+// at it via --ntp-sponsored-images-component-path keeps sponsored campaigns
+// from loading during deterministic runs.
+export const ensureEmptyNtpSponsoredImagesComponent = async ({ profileDir }) => {
+  const componentDir = path.join(profileDir, 'ntp-sponsored-images')
+  await fs.mkdir(componentDir, { recursive: true })
+  await fs.writeFile(path.join(componentDir, 'campaigns.json'), '{}')
+  return componentDir
+}
+
 /**
  * Function to check if the given ID is a valid Chrome component ID
  * @param {string} id - The ID to validate

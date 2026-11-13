@@ -1,4 +1,4 @@
-import { templateProfilePathForArgs } from './setupUtil.mjs'
+import { templateProfilePathForArgs, ensureEmptyNtpSponsoredImagesComponent } from './setupUtil.mjs'
 
 export const VIEWPORT_PRESETS = {
   '1080p': { width: 1920, height: 1080 },
@@ -80,6 +80,11 @@ export const puppeteerConfigForArgs = async (args) => {
 
   const disabledFeatures = mergedDisableFeatures(args.disableFeatures, args.wprGoPorts !== undefined ? WPR_DISABLED_FEATURES : [])
   puppeteerArgs.args.push(`--disable-features=${disabledFeatures.join(',')}`)
+
+  // Point the NTP sponsored images component at an empty directory inside the
+  // profile so no sponsored campaigns load during runs.
+  const ntpSponsoredImagesComponentPath = await ensureEmptyNtpSponsoredImagesComponent({ profileDir: puppeteerArgs.userDataDir })
+  puppeteerArgs.args.push(`--ntp-sponsored-images-component-path=${ntpSponsoredImagesComponentPath}`)
 
   // If viewport preset is specified, set window size, and screen info
   if (args.viewport && VIEWPORT_PRESETS[args.viewport]) {

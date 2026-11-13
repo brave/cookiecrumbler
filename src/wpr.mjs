@@ -1,5 +1,5 @@
-// WprGo (WebPageReplay) integration: binary/asset resolution, archive
-// decoding/validation, and child process lifecycle management.
+// WprGo (WebPageReplay) integration: archive decoding/validation, child
+// process lifecycle management, and netlog-based recording.
 
 import { existsSync } from 'fs'
 import fs from 'fs/promises'
@@ -11,11 +11,13 @@ import { randomUUID } from 'node:crypto'
 import { promisify } from 'node:util'
 import zlib from 'node:zlib'
 import { setTimeout } from 'node:timers/promises'
+import { Worker } from 'node:worker_threads'
 
 import { isValidHttpUrl } from './util.mjs'
+import { createRecordingContext } from 'netlog2wpr'
+import { NETLOG_CAP_MB, MAX_ARCHIVE_BYTES } from './netlogConfig.mjs'
 
 const gunzip = promisify(zlib.gunzip)
-const gzip = promisify(zlib.gzip)
 
 // The Docker image installs wpr under /usr/local; locally-built binaries and
 // webpagereplay checkouts at the app root take precedence when present.
@@ -23,14 +25,112 @@ const appRoot = path.join(import.meta.dirname, '..')
 export const wprGoBinaryPath = existsSync(path.join(appRoot, 'wpr')) ? path.join(appRoot, 'wpr') : '/usr/local/bin/wpr'
 const wprGoAssetsDir = existsSync(path.join(appRoot, 'webpagereplay')) ? path.join(appRoot, 'webpagereplay') : '/usr/local/share/webpagereplay'
 
-// Upper bound for decompressed WprGo archives, guarding against gzip bombs
-const MAX_ARCHIVE_BYTES = 100 * 1024 * 1024
-
 // wpr's "DO NOT CHANGE" ready stdout signal
 const WPR_READY_LINE_RE = /^Starting server on (https?):\/\/.*:(\d+)$/
 const WPR_READY_TIMEOUT_SECONDS = 5
 
 export class WprGoError extends Error {}
+
+// Serializes netlog-to-archive conversions (parse, stringify, gzip, base64):
+// they each hold several copies of the data in memory, so running more than
+// one at a time can exhaust the heap and abort the process. The queue holds
+// only pending waiters; the conversion itself runs in a dedicated worker.
+// No separate queue bound is needed: conversions run inside the request
+// semaphore section and the slot is held until the worker has exited, so
+// pending conversions are bounded by maxConcurrency by construction; the
+// conversion timeout bounds the worst-case wait at
+// maxConcurrency x NETLOG_CONVERSION_TIMEOUT_SECONDS.
+let archiveConversionQueue = Promise.resolve()
+const runArchiveConversionExclusive = (fn) => {
+  const result = archiveConversionQueue.then(fn)
+  archiveConversionQueue = result.then(() => {}, () => {})
+  return result
+}
+
+// Heap ceiling for the netlog-parsing worker. The parser accumulates every
+// event plus rebuilt response bodies in memory; a netlog at the cap expands
+// to roughly 2-3x its size as parsed JS objects, plus the archive object and
+// its JSON string. The default scales with the netlog cap (0.9 x cap x 3,
+// 1GB floor) and keeps ordinary recordings well clear; an over-large netlog
+// still fails cleanly with ERR_WORKER_OUT_OF_MEMORY. Capping the worker's V8
+// heap turns an out-of-memory abort into a failed request. Conversions are
+// serialized by runArchiveConversionExclusive, so this is a global peak bound
+// and may exceed the per-slot concurrency budget. Buffers are external memory
+// and stay uncapped.
+const DEFAULT_NETLOG_WORKER_HEAP_MB = Math.max(1024, Math.ceil(NETLOG_CAP_MB * 0.9 * 3))
+const NETLOG_WORKER_HEAP_MB = parseInt(process.env.NETLOG_WORKER_HEAP_MB) || DEFAULT_NETLOG_WORKER_HEAP_MB
+
+// Wall-clock bound for one conversion, so a stuck worker cannot hold the
+// conversion queue (and its request's semaphore slot) forever. Generous next
+// to the seconds-long parse of a netlog near the cap.
+const NETLOG_CONVERSION_TIMEOUT_SECONDS = parseInt(process.env.NETLOG_CONVERSION_TIMEOUT_SECONDS) || 120
+
+// Grace period for a terminated worker to actually exit before the conversion
+// queue is freed: termination is only requested, so a worker thrashing near
+// its heap limit dies after its current GC, and one stuck in an
+// uninterruptible syscall could outlive terminate() entirely.
+const NETLOG_WORKER_EXIT_GRACE_SECONDS = 10
+
+// Spawns a fresh worker per conversion (~10ms against a seconds-long parse),
+// so there is no pool lifecycle and nothing lingers afterwards.
+const buildArchiveInWorker = (netlogPath, options) => new Promise((resolve, reject) => {
+  const worker = new Worker(new URL('./wprArchiveWorker.mjs', import.meta.url), {
+    resourceLimits: { maxOldGenerationSizeMb: NETLOG_WORKER_HEAP_MB, stackSizeMb: 8 }
+  })
+
+  const timeoutAbort = new AbortController()
+  let settled = false
+  const finish = (fn, value) => {
+    if (settled) return
+    settled = true
+    timeoutAbort.abort()
+    // Free the conversion queue only once the worker actually stopped: a
+    // timed-out worker may still be thrashing near its heap limit with
+    // uncapped external memory, and must not overlap the next conversion.
+    // Termination is only requested, so race the exit with a grace period.
+    const exited = worker.terminate().then(() => {}, () => {})
+    const grace = setTimeout(NETLOG_WORKER_EXIT_GRACE_SECONDS * 1000, undefined, { ref: false }).then(() => {}, () => {})
+    Promise.race([exited, grace]).then(() => fn(value))
+  }
+
+  // A worker terminated while hitting its heap limit can still emit
+  // ERR_WORKER_OUT_OF_MEMORY; without a listener that error would crash the
+  // parent, so keep a permanent no-op handler (the once() handlers below
+  // settle the result)
+  worker.on('error', () => {})
+
+  setTimeout(
+    NETLOG_CONVERSION_TIMEOUT_SECONDS * 1000,
+    undefined,
+    { ref: false, signal: timeoutAbort.signal }
+  ).then(() => {
+    finish(reject, new WprGoError(`netlog conversion timed out after ${NETLOG_CONVERSION_TIMEOUT_SECONDS} seconds`))
+  }, () => {})
+
+  worker.once('message', ({ ok, gz, stats, name, code, message }) => {
+    if (ok) {
+      // Zero-copy view of the cloned buffer, which the worker owns exclusively
+      finish(resolve, { gz: Buffer.from(gz.buffer, gz.byteOffset, gz.byteLength), stats })
+    } else {
+      // NetLogError identity does not survive the thread boundary; the worker
+      // reports name/code/message instead (e.g. a netlog that reached its size
+      // cap, so earlier traffic was rotated away)
+      finish(reject, new WprGoError(`Netlog parsing failed (${code ?? name}): ${message}`))
+    }
+  })
+  worker.once('error', error => {
+    finish(reject, new WprGoError(
+      error.code === 'ERR_WORKER_OUT_OF_MEMORY'
+        ? `netlog exceeded the ${NETLOG_WORKER_HEAP_MB} MB parsing limit`
+        : `netlog worker crashed: ${error.message}`
+    ))
+  })
+  worker.once('exit', exitCode => {
+    finish(reject, new WprGoError(`netlog worker exited unexpectedly (code: ${exitCode})`))
+  })
+
+  worker.postMessage({ netlogPath, options })
+})
 
 /**
  * Decode and sanity-check raw WprGo archive bytes (gzipped JSON with a
@@ -53,10 +153,17 @@ const decodeArchiveBuffer = async (buf) => {
 }
 
 /**
- * Manages the lifecycle of a single wpr process (record or replay).
+ * Manages the lifecycle of a single capture session.
+ *
+ * Record mode captures browser traffic through Chromium's netlog (written by
+ * the browser with --log-net-log/--net-log-capture-mode) and converts it into
+ * a WprGo archive on stop; no wpr process is involved.
+ * Replay runs a wpr process that serves a previously recorded archive.
  *
  * Archive files are materialized server-side under randomized names in
- * mkdtemp'ed directories; client input never determines filesystem paths.
+ * mkdtemp'ed directories, and the netlog lives in a mkdtemp'ed directory too
+ * (the browser creates the file itself); client input never determines
+ * filesystem paths.
  */
 export class WprGoSession {
   constructor ({ action, data } = {}) {
@@ -76,6 +183,8 @@ export class WprGoSession {
     this._ready = false
     this._ports = undefined
     this._url = undefined
+    this._netlogPath = undefined
+    this._recordingContext = undefined
   }
 
   get action () {
@@ -83,21 +192,20 @@ export class WprGoSession {
   }
 
   get ports () {
-    if (!this._ready) {
+    // Record mode has no wpr process, so it has no ports to expose
+    if (this._action === 'replay' && !this._ready) {
       throw new WprGoError('WprGo not yet ready')
     }
     return this._ports
   }
 
   /**
-   * Validates archive data, materializes the archive file and spawns wpr with
-   * ephemeral ports. Returns { firstUrl }: the first http(s) URL found in the
-   * archive (for replay), or undefined (for record).
+   * Validates inputs, reserves ports and spawns wpr (replay only), or prepares
+   * netlog-based recording (record only). Returns { firstUrl, netlogPath,
+   * injectScript }: firstUrl is the first http(s) URL found in the archive
+   * (replay), netlogPath/injectScript drive the browser for recording.
    */
   async prepare ({ url } = {}) {
-    if (!existsSync(wprGoBinaryPath)) {
-      throw new WprGoError(`WprGo binary not found at ${wprGoBinaryPath}`)
-    }
     if (!existsSync(wprGoAssetsDir)) {
       throw new WprGoError(`WprGo assets directory not found at ${wprGoAssetsDir}`)
     }
@@ -105,19 +213,32 @@ export class WprGoSession {
     this._url = url
     this._recordedAt = Date.now()
 
-    let firstUrl
     if (this._action === 'record') {
-      this._archivePath = await this._materializeArchivePath()
-    } else {
-      // Replay: the archive is uploaded as base64 and always materialized
-      // server-side under a randomized name
-      const buf = Buffer.from(this._data, 'base64')
-      const archive = await decodeArchiveBuffer(buf)
-      this._archive = archive
-      this._archivePath = await this._materializeArchivePath()
-      await fs.writeFile(this._archivePath, buf)
-      firstUrl = this._extractFirstUrl(archive)
+      // Recording captures the browser's own traffic via its netlog; the wpr
+      // process is only used for replay. The recorded session still gets
+      // deterministic Date/Math.random via the injected script, and the
+      // unrendered script is embedded in the archive for replay.
+      const deterministicScript = await fs.readFile(path.join(wprGoAssetsDir, 'deterministic.js'), 'utf8')
+      // wpr seeds deterministic.js with 1000 * time.Now().Unix()
+      this._recordingContext = createRecordingContext({ deterministicScript })
+      this._netlogPath = await this._materializeNetlogPath()
+      return {
+        netlogPath: this._netlogPath,
+        injectScript: this._recordingContext.injectScript
+      }
     }
+
+    // Replay: the archive is uploaded as base64 and always materialized
+    // server-side under a randomized name
+    if (!existsSync(wprGoBinaryPath)) {
+      throw new WprGoError(`WprGo binary not found at ${wprGoBinaryPath}`)
+    }
+    const buf = Buffer.from(this._data, 'base64')
+    const archive = await decodeArchiveBuffer(buf)
+    this._archive = archive
+    this._archivePath = await this._materializeArchivePath()
+    await fs.writeFile(this._archivePath, buf)
+    const firstUrl = this._extractFirstUrl(archive)
 
     const extraArgs = [
       // wpr resolves default cert/script paths relative to its cwd; pass absolute ones instead
@@ -126,18 +247,13 @@ export class WprGoSession {
       // Per-request SERVING/FAILED logs are INFO/WARN; default to warn to keep
       // failures visible without the success spam (override with WPR_LOG_LEVEL)
       `--log-level=${process.env.WPR_LOG_LEVEL ?? 'warn'}`,
-    ]
-    if (this._action === 'replay') {
-      extraArgs.push('--inject-archive-scripts=true')
+      '--inject-archive-scripts=true',
       // wpr rejects duplicate script names: archives recorded via wpr embed
       // deterministic.js in InjectedScripts, so only pass the file when absent
-      if (!this._archive?.InjectedScripts?.['deterministic.js']) {
-        extraArgs.push(`--inject-scripts=${path.join(wprGoAssetsDir, 'deterministic.js')}`)
-      }
-    } else {
-      // wpr embeds the script into the recorded archive for later replay
-      extraArgs.push(`--inject-scripts=${path.join(wprGoAssetsDir, 'deterministic.js')}`)
-    }
+      ...(this._archive?.InjectedScripts?.['deterministic.js'] === undefined
+        ? [`--inject-scripts=${path.join(wprGoAssetsDir, 'deterministic.js')}`]
+        : [])
+    ]
 
     // port 0 means request any free port from kernel
     const args = [this._action, ...extraArgs, '--http-port=0', '--https-port=0', this._archivePath]
@@ -226,12 +342,31 @@ export class WprGoSession {
   }
 
   /**
+   * Allocates a tmp directory, tracks it for cleanup, and returns its path.
+   */
+  async _makeTmpDir (prefix) {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix))
+    this._tmpDirs.push(dir)
+    return dir
+  }
+
+  /**
    * Allocates a tmp directory and returns a randomized archive file path in it.
    */
   async _materializeArchivePath () {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cookiecrumbler-wprgo-archive-'))
-    this._tmpDirs.push(dir)
+    const dir = await this._makeTmpDir('cookiecrumbler-wprgo-archive-')
     return path.join(dir, `${randomUUID()}.wprgo`)
+  }
+
+  /**
+   * Returns the netlog file path inside a tracked tmp dir. The file itself is
+   * not created here; the browser creates (and truncates per run) the file,
+   * and its bounded mode rotates files in a "<path>.inprogress" directory,
+   * which therefore also ends up inside the tracked dir and is removed with
+   * it by cleanup().
+   */
+  async _materializeNetlogPath () {
+    return path.join(await this._makeTmpDir('cookiecrumbler-netlog-'), 'netlog.json')
   }
 
   _extractFirstUrl (archive) {
@@ -257,10 +392,16 @@ export class WprGoSession {
   }
 
   /**
-   * Gracefully terminates wpr and returns the base64-encoded archive when
-   * recording. Throws WprGoError on premature exit or shutdown failure.
+   * For record: converts the netlog into a base64-encoded archive, failing if
+   * the netlog reached its size limit (earlier traffic rotated away). For
+   * replay: gracefully terminates wpr. Throws WprGoError on premature exit,
+   * shutdown failure or netlog failure.
    */
   async stop () {
+    if (this._action === 'record') {
+      return await this._buildRecordedArchive()
+    }
+
     const process = this._process
     if (process.exitCode !== null || process.signalCode !== null) {
       throw new WprGoError(`WprGo process exited prematurely (code: ${process.exitCode}, signal: ${process.signalCode ?? 'none'})`)
@@ -290,27 +431,29 @@ export class WprGoSession {
       await exited
       throw new WprGoError(`WprGo failure: ${error.message}`)
     }
-
-    if (this._action === 'record') {
-      return await this._readRecordedArchive()
-    }
   }
 
   /**
-   * Reads the recorded archive and stamps cookiecrumbler metadata (the original
-   * URL) into it before returning it as base64, so replay can recover the URL
-   * deterministically (wpr record has no --metadata flag).
+   * Converts the recorded netlog into a WprGo archive and stamps
+   * cookiecrumbler metadata (the original URL) into it, so replay can recover
+   * the URL deterministically, before returning it as base64. Errors are
+   * surfaced as WprGoError.
    */
-  async _readRecordedArchive () {
-    console.log(`Reading from ${this._archivePath}`)
-    const archive = await decodeArchiveBuffer(await fs.readFile(this._archivePath))
-    archive.Metadata = JSON.stringify({
-      originalUrl: this._url,
-      recordedAt: this._recordedAt,
-    })
-    const archiveData = (await gzip(JSON.stringify(archive))).toString('base64')
-    console.log(`Read ${archiveData.length} bytes`)
-    return archiveData
+  async _buildRecordedArchive () {
+    try {
+      return await runArchiveConversionExclusive(async () => {
+        console.log(`Parsing netlog from ${this._netlogPath}`)
+        const { gz, stats } = await buildArchiveInWorker(this._netlogPath, {
+          ...this._recordingContext.archiveOptions,
+          metadata: JSON.stringify({ originalUrl: this._url, recordedAt: this._recordedAt })
+        })
+        const archiveData = gz.toString('base64')
+        console.log(`Built archive with ${stats.hosts} hosts (${stats.exchanges} exchanges, ${archiveData.length} bytes)`)
+        return archiveData
+      })
+    } catch (error) {
+      throw error instanceof WprGoError ? error : new WprGoError(error.message)
+    }
   }
 
   async cleanup () {

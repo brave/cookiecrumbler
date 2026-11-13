@@ -1,6 +1,6 @@
 import fs from 'fs/promises'
 import path from 'path'
-import { readFileSync, readdirSync, writeFileSync } from 'fs'
+import { existsSync, readFileSync, readdirSync, writeFileSync } from 'fs'
 import { setTimeout } from 'timers/promises'
 import { KnownDevices } from 'puppeteer-core'
 import ErrorStackParser from 'error-stack-parser'
@@ -39,10 +39,10 @@ export const replaceVersion = ({ fileName }) => {
   writeFileSync(fileName, modifiedManifest)
 }
 
+// gkboaolpopklhgplhaaiboijnklogmbc/1.0.60/list_catalog.json
 const getListCatalog = ({ profileDir }) => {
   const extensionDir = path.join(profileDir, 'gkboaolpopklhgplhaaiboijnklogmbc')
   const versionDir = getExtensionVersion(extensionDir)
-  // gkboaolpopklhgplhaaiboijnklogmbc/1.0.60/list_catalog.json
   const data = readFileSync(path.join(extensionDir, versionDir, 'list_catalog.json'), 'utf8')
   return JSON.parse(data)
 }
@@ -51,23 +51,19 @@ export const parseListCatalogComponentIds = ({ profileDir }) => {
   const catalog = getListCatalog({ profileDir })
 
   // Extract the component_id values
-  const componentIds = catalog.map(item => item.list_text_component.component_id)
-
-  return componentIds
+  return catalog.map(item => item.list_text_component.component_id)
 }
 
 export const getOptionalDefaultComponentIds = ({ profileDir }) => {
   const catalog = getListCatalog({ profileDir })
 
   // Extract the component_id values
-  const components = catalog
+  return catalog
     .filter(item => item.list_text_component.component_id !== 'iodkpdagapdfkphljnddpjlldadblomo' && (item.default_enabled === true))
     .reduce((acc, item) => {
       acc[item.list_text_component.component_id] = item.title
       return acc
     }, {})
-
-  return components
 }
 
 export const isKeeplistedComponentId = ({ id, additionalComponentList }) => {
@@ -75,14 +71,14 @@ export const isKeeplistedComponentId = ({ id, additionalComponentList }) => {
     'afalakplffnnnlkncjhbmahjfjhmlkal', // Brave Local Data Updater
     // 'gkboaolpopklhgplhaaiboijnklogmbc', // Brave Ad Block List Catalog, managed separately
     // 'iodkpdagapdfkphljnddpjlldadblomo', // Brave Ad Block Updater, included in list catalog
-    'mfddibmblmbccpadfndgakiopmmhebop' // Brave Ad Block Resources Library
+    'mfddibmblmbccpadfndgakiopmmhebop', // Brave Ad Block Resources Library
+    'nlpaeekllejnmhoonlpcefpfnpbajbpe' // Brave User Agent
   ].concat(additionalComponentList)
   return allowlist.includes(id)
 }
 
-export const toggleAdblocklists = (listCatalogPath, adblockLists) => {
-  // read and parse adblock_lists.json
-  const listCatalog = JSON.parse(readFileSync(listCatalogPath), 'utf8')
+const patchListCatalog = (catalogPath, adblockLists) => {
+  const listCatalog = JSON.parse(readFileSync(catalogPath, 'utf8'))
 
   listCatalog.forEach(item => {
     if (item.list_text_component.component_id in adblockLists) {
@@ -90,7 +86,17 @@ export const toggleAdblocklists = (listCatalogPath, adblockLists) => {
     }
   })
 
-  writeFileSync(listCatalogPath, JSON.stringify(listCatalog, null, 2))
+  writeFileSync(catalogPath, JSON.stringify(listCatalog, null, 2))
+}
+
+export const toggleAdblocklists = (listCatalogPath, adblockLists) => {
+  // Patch list_catalog.json in the working profile; it drives the default
+  // filter lists engine. A missing catalog means a broken template and
+  // must fail loudly.
+  if (!existsSync(listCatalogPath)) {
+    throw new Error(`Broken template profile: missing ${listCatalogPath}`)
+  }
+  patchListCatalog(listCatalogPath, adblockLists)
 }
 
 export const proxyUrlWithAuth = (proxyHost) => {

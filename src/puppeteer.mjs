@@ -26,8 +26,7 @@ const WPR_DISABLED_FEATURES = [
 
 /**
  * Non-resolving URL used for check requests so the browser cannot fetch
- * component updates even when --allow-brave-component-update is set.
- * (.invalid is a reserved TLD that never resolves.)
+ * component updates. (.invalid is a reserved TLD that never resolves.)
  * Setup must keep default
  */
 export const INVALID_COMPONENT_UPDATER_URL = 'https://localhost.invalid/'
@@ -49,9 +48,7 @@ export const puppeteerConfigForArgs = async (args) => {
       '--disable-brave-update',
       '--no-sandbox',
       '--disable-setuid-sandbox',
-      '--disable-gpu',
-      '--allow-brave-component-update',
-      '--disable-component-update'
+      '--disable-gpu'
     ],
     executablePath: args.executablePath,
     ignoreDefaultArgs: [
@@ -61,7 +58,12 @@ export const puppeteerConfigForArgs = async (args) => {
   }
 
   // Check requests only: override the component updater so Brave cannot
-  // download updates. Setup must not set invalidateComponentUpdater.
+  // download updates at all.
+  // Do not use --disable-component-update for this: since Brave nightly
+  // 1.101.40 it also suppresses the initial registration of components,
+  // which breaks profile setup. The invalid URL alone reliably prevents
+  // any component download during check requests.
+  // Setup must not set invalidateComponentUpdater.
   if (args.invalidateComponentUpdater) {
     puppeteerArgs.args.push(`--component-updater=url-source=${INVALID_COMPONENT_UPDATER_URL}`)
   }

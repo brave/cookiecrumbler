@@ -11,13 +11,12 @@ import { randomUUID } from 'node:crypto'
 import { promisify } from 'node:util'
 import zlib from 'node:zlib'
 import { setTimeout } from 'node:timers/promises'
+import { Worker } from 'node:worker_threads'
 
 import { isValidHttpUrl } from './util.mjs'
-import { NetLogError, createRecordingContext, netlogToWprArchive } from 'netlog2wpr'
-import { NETLOG_CAP_BYTES } from './netlogConfig.mjs'
+import { createRecordingContext } from 'netlog2wpr'
 
 const gunzip = promisify(zlib.gunzip)
-const gzip = promisify(zlib.gzip)
 
 // The Docker image installs wpr under /usr/local; locally-built binaries and
 // webpagereplay checkouts at the app root take precedence when present.
@@ -33,6 +32,69 @@ const WPR_READY_LINE_RE = /^Starting server on (https?):\/\/.*:(\d+)$/
 const WPR_READY_TIMEOUT_SECONDS = 5
 
 export class WprGoError extends Error {}
+
+// Serializes netlog-to-archive conversions (parse, stringify, gzip, base64):
+// they each hold several copies of the data in memory, so running more than
+// one at a time can exhaust the heap and abort the process. The queue holds
+// only pending waiters; the conversion itself runs in a dedicated worker.
+let archiveConversionQueue = Promise.resolve()
+const runArchiveConversionExclusive = (fn) => {
+  const result = archiveConversionQueue.then(fn)
+  archiveConversionQueue = result.then(() => {}, () => {})
+  return result
+}
+
+// Heap ceiling for the netlog-parsing worker. The parser accumulates every
+// event plus rebuilt response bodies in memory; capping the worker's V8 heap
+// turns an out-of-memory abort into a failed request. Conversions are
+// serialized by runArchiveConversionExclusive, so this is a global peak bound and
+// may exceed the per-slot concurrency budget. 768MB keeps ordinary recordings
+// well clear of the cap; a netlog near the 300MB browser cap can still exceed
+// it (parsed events alone expand well beyond the file size) and then fails
+// cleanly instead of aborting the process. Buffers are external memory and
+// stay uncapped.
+const NETLOG_WORKER_HEAP_MB = parseInt(process.env.NETLOG_WORKER_HEAP_MB) || 768
+
+// Spawns a fresh worker per conversion (~10ms against a seconds-long parse),
+// so there is no pool lifecycle and nothing lingers afterwards.
+const buildArchiveInWorker = (netlogPath, options) => new Promise((resolve, reject) => {
+  const worker = new Worker(new URL('./wprArchiveWorker.mjs', import.meta.url), {
+    resourceLimits: { maxOldGenerationSizeMb: NETLOG_WORKER_HEAP_MB, stackSizeMb: 8 }
+  })
+
+  let settled = false
+  const finish = (fn, value) => {
+    if (settled) return
+    settled = true
+    worker.removeAllListeners()
+    fn(value)
+    worker.terminate().catch(() => {})
+  }
+
+  worker.once('message', ({ ok, gz, stats, name, code, message }) => {
+    if (ok) {
+      // Zero-copy view of the cloned buffer, which the worker owns exclusively
+      finish(resolve, { gz: Buffer.from(gz.buffer, gz.byteOffset, gz.byteLength), stats })
+    } else {
+      // NetLogError identity does not survive the thread boundary; the worker
+      // reports name/code/message instead (e.g. a netlog that reached its size
+      // cap, so earlier traffic was rotated away)
+      finish(reject, new WprGoError(`Netlog parsing failed (${code ?? name}): ${message}`))
+    }
+  })
+  worker.once('error', error => {
+    finish(reject, new WprGoError(
+      error.code === 'ERR_WORKER_OUT_OF_MEMORY'
+        ? `netlog exceeded the ${NETLOG_WORKER_HEAP_MB} MB parsing limit`
+        : `netlog worker crashed: ${error.message}`
+    ))
+  })
+  worker.once('exit', exitCode => {
+    finish(reject, new WprGoError(`netlog worker exited unexpectedly (code: ${exitCode})`))
+  })
+
+  worker.postMessage({ netlogPath, options })
+})
 
 /**
  * Decode and sanity-check raw WprGo archive bytes (gzipped JSON with a
@@ -343,21 +405,17 @@ export class WprGoSession {
    */
   async _buildRecordedArchive () {
     try {
-      console.log(`Parsing netlog from ${this._netlogPath}`)
-      const { archive, stats } = await netlogToWprArchive(this._netlogPath, {
-        ...this._recordingContext.archiveOptions,
-        maxNetlogBytes: NETLOG_CAP_BYTES,
-        dropInternalRequests: true,
-        metadata: JSON.stringify({ originalUrl: this._url, recordedAt: this._recordedAt })
+      return await runArchiveConversionExclusive(async () => {
+        console.log(`Parsing netlog from ${this._netlogPath}`)
+        const { gz, stats } = await buildArchiveInWorker(this._netlogPath, {
+          ...this._recordingContext.archiveOptions,
+          metadata: JSON.stringify({ originalUrl: this._url, recordedAt: this._recordedAt })
+        })
+        const archiveData = gz.toString('base64')
+        console.log(`Built archive with ${stats.hosts} hosts (${stats.exchanges} exchanges, ${archiveData.length} bytes)`)
+        return archiveData
       })
-      const archiveData = (await gzip(JSON.stringify(archive))).toString('base64')
-      console.log(`Built archive with ${stats.hosts} hosts (${stats.exchanges} exchanges, ${archiveData.length} bytes)`)
-      return archiveData
     } catch (error) {
-      if (error instanceof NetLogError) {
-        // e.g. a netlog that reached its size cap, so earlier traffic was rotated away
-        throw new WprGoError(`Netlog parsing failed (${error.code}): ${error.message}`)
-      }
       throw error instanceof WprGoError ? error : new WprGoError(error.message)
     }
   }

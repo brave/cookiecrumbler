@@ -131,13 +131,25 @@ const forceDownloadCatalogLists = async ({ args, tmpProfile }) => {
   // default_enabled key restore to absent, since JSON.stringify drops
   // undefined values. Also collect the component ids that must end up
   // registered and updated in the forced session.
+  // Regional lists (entries with at least one lang) keep their shipped
+  // default_enabled and are not force-downloaded, so they don't register
+  // or update in the forced session.
+  const regionalIds = new Set(
+    entries
+      .filter(entry => Array.isArray(entry.langs) && entry.langs.length > 0)
+      .map(entry => entry.list_text_component.component_id)
+  )
   const originalDefaults = Object.fromEntries(
-    entries.map(entry => [entry.list_text_component.component_id, entry.default_enabled])
+    entries
+      .filter(entry => !regionalIds.has(entry.list_text_component.component_id))
+      .map(entry => [entry.list_text_component.component_id, entry.default_enabled])
   )
   const expectedIds = new Set(
-    entries.map(entry => entry.list_text_component.component_id)
+    entries
+      .filter(entry => !regionalIds.has(entry.list_text_component.component_id))
+      .map(entry => entry.list_text_component.component_id)
   )
-  await fs.writeFile(catalogPath, JSON.stringify(entries.map(entry => ({ ...entry, default_enabled: true }))))
+  await fs.writeFile(catalogPath, JSON.stringify(entries.map(entry => regionalIds.has(entry.list_text_component.component_id) ? entry : { ...entry, default_enabled: true })))
 
   console.log('Force-downloading all catalog lists...')
   // Same flags as the runtime flow (puppeteerConfigForArgs), except the

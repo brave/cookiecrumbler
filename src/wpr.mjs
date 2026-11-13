@@ -36,8 +36,10 @@ export class WprGoError extends Error {}
 // one at a time can exhaust the heap and abort the process. The queue holds
 // only pending waiters; the conversion itself runs in a dedicated worker.
 // No separate queue bound is needed: conversions run inside the request
-// semaphore section (stop() is called while a slot is held), so pending
-// conversions are bounded by maxConcurrency by construction.
+// semaphore section and the slot is held until the worker has exited, so
+// pending conversions are bounded by maxConcurrency by construction; the
+// conversion timeout bounds the worst-case wait at
+// maxConcurrency x NETLOG_CONVERSION_TIMEOUT_SECONDS.
 let archiveConversionQueue = Promise.resolve()
 const runArchiveConversionExclusive = (fn) => {
   const result = archiveConversionQueue.then(fn)
@@ -63,6 +65,12 @@ const NETLOG_WORKER_HEAP_MB = parseInt(process.env.NETLOG_WORKER_HEAP_MB) || DEF
 // to the seconds-long parse of a netlog near the cap.
 const NETLOG_CONVERSION_TIMEOUT_SECONDS = parseInt(process.env.NETLOG_CONVERSION_TIMEOUT_SECONDS) || 120
 
+// Grace period for a terminated worker to actually exit before the conversion
+// queue is freed: termination is only requested, so a worker thrashing near
+// its heap limit dies after its current GC, and one stuck in an
+// uninterruptible syscall could outlive terminate() entirely.
+const NETLOG_WORKER_EXIT_GRACE_SECONDS = 10
+
 // Spawns a fresh worker per conversion (~10ms against a seconds-long parse),
 // so there is no pool lifecycle and nothing lingers afterwards.
 const buildArchiveInWorker = (netlogPath, options) => new Promise((resolve, reject) => {
@@ -76,10 +84,20 @@ const buildArchiveInWorker = (netlogPath, options) => new Promise((resolve, reje
     if (settled) return
     settled = true
     timeoutAbort.abort()
-    worker.removeAllListeners()
-    fn(value)
-    worker.terminate().catch(() => {})
+    // Free the conversion queue only once the worker actually stopped: a
+    // timed-out worker may still be thrashing near its heap limit with
+    // uncapped external memory, and must not overlap the next conversion.
+    // Termination is only requested, so race the exit with a grace period.
+    const exited = worker.terminate().then(() => {}, () => {})
+    const grace = setTimeout(NETLOG_WORKER_EXIT_GRACE_SECONDS * 1000, undefined, { ref: false }).then(() => {}, () => {})
+    Promise.race([exited, grace]).then(() => fn(value))
   }
+
+  // A worker terminated while hitting its heap limit can still emit
+  // ERR_WORKER_OUT_OF_MEMORY; without a listener that error would crash the
+  // parent, so keep a permanent no-op handler (the once() handlers below
+  // settle the result)
+  worker.on('error', () => {})
 
   setTimeout(
     NETLOG_CONVERSION_TIMEOUT_SECONDS * 1000,

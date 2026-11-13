@@ -247,7 +247,7 @@ function collectBrowserNoticeCandidates () {
  * Function dependencies from the host can be accessed via the API exposed by `randomToken`.
  */
 export async function inPageRoutine (randomToken, hostOverride) {
-  const hostMethods = ['getETLDP1', 'classifyCookieNoticeText', 'classifyBrowserNoticeText', 'extractFrameText']
+  const hostMethods = ['getETLDP1', 'classifyCookieNoticeText', 'classifyBrowserNoticeText']
   const hostAPI = hostMethods.reduce((acc, v) => {
     acc[v] = (...args) => window[randomToken](v, ...args)
     return acc
@@ -273,7 +273,24 @@ export async function inPageRoutine (randomToken, hostOverride) {
 
   elements = nonParentElements(elements)
 
-  elements = await asyncFilter(elements, (node) => contentCheck(hostAPI, classifiersUsed, node))
+  const frameElements = new Map()
+  let nextFrameId = 0
+  window[randomToken].resolveFrameElement = id => frameElements.get(id)
+  hostAPI.extractFrameText = async (iframe) => {
+    const id = String(nextFrameId++)
+    frameElements.set(id, iframe)
+    try {
+      return await window[randomToken]('extractFrameText', id)
+    } finally {
+      frameElements.delete(id)
+    }
+  }
+  try {
+    elements = await asyncFilter(elements, (node) => contentCheck(hostAPI, classifiersUsed, node))
+  } finally {
+    frameElements.clear()
+    delete window[randomToken].resolveFrameElement
+  }
 
   const identifiedCookieNotices = elements.map(expandDetectedCookieNotice)
 

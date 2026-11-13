@@ -24,6 +24,7 @@ import userAgentOverride from './plugins/user-agent-override.mjs'
 import { puppeteerConfigForArgs } from './puppeteer.mjs'
 import { templateProfilePathForArgs, toggleAdblocklists, proxyUrlWithAuth, fixupBundleStackTrace, getBundlePaths } from './setupUtil.mjs'
 import { generateRandomToken } from './util.mjs'
+import { exposeInPageAPI } from './inpage-api.mjs'
 
 import { cookieNoticeClassifier, browserNoticeClassifier } from './text-classification.mjs'
 import { WprGoSession, WprGoError } from './wpr.mjs'
@@ -34,9 +35,6 @@ const openai = new OpenAI({
 })
 
 const inPageAPI = {
-  extractFrameText: (iframeHandle) => {
-    return iframeHandle.contentFrame().then(frameDoc => frameDoc.evaluate(() => document.documentElement.innerText))
-  },
   classifyCookieNoticeText: (innerText) => {
     return cookieNoticeClassifier(innerText, openai)
   },
@@ -234,7 +232,7 @@ export const checkPage = async (args) => {
     await setTimeout(waitTimeMs)
 
     const randomToken = generateRandomToken()
-    await page.exposeFunction(randomToken, (name, ...args) => inPageAPI[name](...args))
+    await exposeInPageAPI(page, randomToken, inPageAPI)
 
     // Bundled code is in CommonJS format.
     // CJS is not normally intended for in-browser use. Why choose it over ESM?

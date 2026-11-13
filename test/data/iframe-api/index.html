@@ -1,0 +1,15 @@
+<!doctype html>
+<html>
+<head><title>Iframe API regression</title></head>
+<body>
+  <main>Page content</main>
+  <div id="notice" style="position: fixed; bottom: 0; width: 320px; height: 120px">
+    <iframe src="/frame?text=Cookie%20notice" title="Cookie notice"></iframe>
+  </div>
+  <script>
+    const iframe = document.querySelector('iframe')
+    // Simulate event-handler metadata pointing back to the iframe (#404).
+    iframe.selfReference = iframe
+  </script>
+</body>
+</html>

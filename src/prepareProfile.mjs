@@ -49,7 +49,7 @@ const forceProvisionNonDesktopLists = entries => {
 // missing or still-empty status span counts as pending. Without
 // expectedIds all clicked components are watched (used for the initial
 // setup session, where only the default-enabled lists are registered).
-const UPDATE_COMPLETE_STATES = ['Component already up to date', 'Up-to-date', 'Component updated']
+const UPDATE_COMPLETE_STATES = ['Component already up to date', 'Up-to-date', 'Component updated', 'Updated']
 
 const updateComponents = async (updatePage, { expectedIds = null, timeout = 180000 } = {}) => {
   await updatePage.goto('brave://components', { waitUntil: 'domcontentloaded' })
@@ -57,6 +57,15 @@ const updateComponents = async (updatePage, { expectedIds = null, timeout = 1800
   const deadline = Date.now() + timeout
   while (true) {
     const buttons = await updatePage.$$('.button-check-update')
+    const names = await updatePage.evaluate(() =>
+      Object.fromEntries(
+        Array.from(document.querySelectorAll('.button-check-update')).map(button => [
+          button.id,
+          button.closest('.component')?.querySelector('.component-name')?.innerText.trim() ?? ''
+        ])
+      )
+    )
+    const clickCandidates = []
     for (const button of buttons) {
       let buttonId = null
       try {
@@ -65,11 +74,19 @@ const updateComponents = async (updatePage, { expectedIds = null, timeout = 1800
         continue // Element handle went stale after a re-render; retried next round
       }
       if (buttonId && !clicked.has(buttonId)) {
-        console.log('Updating component:', buttonId)
-        clicked.add(buttonId)
-        await button.click()
-        await setTimeout(100) // Wait for 100ms between clicks
+        clickCandidates.push({ button, buttonId })
       }
+    }
+    // Click the List Catalog first so its update lands before the other
+    // component tasks queue up, registering any newly cataloged lists early.
+    clickCandidates.sort((a, b) =>
+      (b.buttonId === LIST_CATALOG_COMPONENT_ID) - (a.buttonId === LIST_CATALOG_COMPONENT_ID))
+    for (const { button, buttonId } of clickCandidates) {
+      const name = names[buttonId]
+      console.log('Updating component:', buttonId, name ? `(${name})` : '')
+      clicked.add(buttonId)
+      await button.click()
+      await setTimeout(100) // Wait for 100ms between clicks
     }
 
     const watchIds = expectedIds ?? [...clicked]
@@ -79,6 +96,14 @@ const updateComponents = async (updatePage, { expectedIds = null, timeout = 1800
     const pending = watchIds.filter(id => !UPDATE_COMPLETE_STATES.includes(statuses[id]))
     if (pending.length === 0) {
       break
+    }
+    const elapsedSeconds = Math.round((deadline - Date.now()) / 1000)
+    if (elapsedSeconds % 10 === 0) {
+      console.log(`Component update poll: ${pending.length} pending, ~${Math.round(timeout / 1000) - elapsedSeconds}s elapsed`)
+      for (const id of watchIds) {
+        const state = UPDATE_COMPLETE_STATES.includes(statuses[id]) ? 'done' : 'pending'
+        console.log(`  [${state}] ${id} (${names[id] ?? ''}): "${statuses[id]}"`)
+      }
     }
     if (Date.now() > deadline) {
       throw new Error(`Component updates incomplete after ${timeout}ms: ${pending.join(', ')}`)

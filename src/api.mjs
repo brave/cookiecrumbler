@@ -17,6 +17,7 @@ import { Semaphore, withTimeout } from 'async-mutex'
 import { checkPage } from './lib.mjs'
 import { getFilteredKnownDevices } from './setupUtil.mjs'
 import { isValidHttpUrl } from './util.mjs'
+import { MAX_ARCHIVE_BYTES } from './netlogConfig.mjs'
 import { VIEWPORT_PRESETS, REQUEST_DISABLE_FEATURES_ALLOWLIST } from './puppeteer.mjs'
 
 // Calculate default max concurrency based on available memory
@@ -40,8 +41,12 @@ console.log(`Browser binary: ${browserBinaryPath}`)
 console.log(`Port: ${port}`)
 
 const app = new Koa()
-// Raised json limit: WprGo replay archives are uploaded base64-encoded in the JSON body
-app.use(bodyParser({ jsonLimit: '200mb' }))
+// Raised json limit: WprGo replay archives are uploaded base64-encoded in the
+// JSON body, and base64(gz(archive)) is roughly archive-sized, so derive the
+// limit from the archive bound with margin (recording must stay replayable).
+// Note the body is buffered and parsed before routing/admission, so a large
+// limit lets uploads spend main-thread memory outside the request semaphore.
+app.use(bodyParser({ jsonLimit: Math.ceil(MAX_ARCHIVE_BYTES * 1.3) }))
 app.use(compress())
 
 Sentry.setupKoaErrorHandler(app)

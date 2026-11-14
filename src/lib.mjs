@@ -168,6 +168,17 @@ export const checkPage = async (args) => {
 
   const browser = await Sentry.startSpan({ name: 'Launch Browser' }, () => {
     return pptr.launch(puppeteerArgs)
+  }).catch(async error => {
+    // The normal cleanup block is reached only after a browser has launched.
+    const cleanupResults = await Promise.allSettled([
+      fs.rm(workingProfile, { recursive: true, force: true }),
+      proxyUrl === undefined ? undefined : closeAnonymizedProxy(proxyUrl, true),
+      wprSession?.stop().finally(() => wprSession.cleanup())
+    ])
+    for (const result of cleanupResults) {
+      if (result.status === 'rejected') Sentry.captureException(result.reason)
+    }
+    throw error
   })
 
   const page = await browser.newPage()

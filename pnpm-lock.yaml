@@ -201,8 +201,8 @@ importers:
         specifier: ^5.1.1
         version: 5.2.2
       netlog2wpr:
-        specifier: workspace:*
-        version: link:packages/netlog2wpr
+        specifier: git+https://github.com/brave-experiments/netlog2wpr.git#main
+        version: https://codeload.github.com/brave-experiments/netlog2wpr/tar.gz/f57dfcf7ae9f8ee930cde0a00b5cc5c370b41312
       openai:
         specifier: ^6.0.0
         version: 6.49.0(ws@8.22.0)(zod@4.6.7)
@@ -1563,6 +1563,11 @@ packages:
     hasBin: true
     peerDependencies:
       eslint: ^9.22.0 || ^10.0.0
+
+  netlog2wpr@https://codeload.github.com/brave-experiments/netlog2wpr/tar.gz/f57dfcf7ae9f8ee930cde0a00b5cc5c370b41312:
+    resolution: {gitHosted: true, integrity: sha512-ptyxtQGjOlZmbpkC2WgKQJujuIcaEfYi7Y4wEZJZ3qA+noPJzVk3LAY5pXAuWVZ6cbOFq9hM5M0I8oDXqCXYig==, tarball: https://codeload.github.com/brave-experiments/netlog2wpr/tar.gz/f57dfcf7ae9f8ee930cde0a00b5cc5c370b41312}
+    version: 0.1.0
+    engines: {node: '>=24'}
 
   node@runtime:24.22.2:
     resolution:
@@ -3462,6 +3467,8 @@ snapshots:
       - supports-color
       - ts-declaration-location
       - typescript
+
+  netlog2wpr@https://codeload.github.com/brave-experiments/netlog2wpr/tar.gz/f57dfcf7ae9f8ee930cde0a00b5cc5c370b41312: {}
 
   node@runtime:24.22.2: {}
 

@@ -119,6 +119,9 @@ img:hover {
   font-style: italic;
   color: #888;
 }
+.report-location {
+  color: #888;
+}
 #spinner {
   font-size: 3em;
   display: none;
@@ -555,6 +558,14 @@ details pre {
         datestring.classList.add('datestring');
         datestring.textContent = new Date(report.timestamp).toString();
         card.appendChild(datestring);
+
+        // Only set when the check was run through a proxy from the configured list
+        if (report.location) {
+          const p = document.createElement('p');
+          p.classList.add('report-location');
+          p.textContent = `Location: ${report.location}`;
+          card.appendChild(p);
+        }
 
         if (report.error !== undefined) {
           const p = document.createElement('p');

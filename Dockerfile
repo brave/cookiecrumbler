@@ -22,9 +22,7 @@ ENV BRAVE_BINARY=/usr/bin/${PACKAGE_NAME}
 
 ARG DEBIAN_FRONTEND=noninteractive
 
-# The pnpm base image already ships curl; only the Brave apt repo is added here.
-RUN apt-get -qq update && \
-    curl -fsSLo /usr/share/keyrings/${PACKAGE_NAME}-archive-keyring.gpg https://brave-browser-apt-${CHANNEL}.s3.brave.com/${PACKAGE_NAME}-archive-keyring.gpg && \
+RUN curl -fsSLo /usr/share/keyrings/${PACKAGE_NAME}-archive-keyring.gpg https://brave-browser-apt-${CHANNEL}.s3.brave.com/${PACKAGE_NAME}-archive-keyring.gpg && \
     echo "deb [signed-by=/usr/share/keyrings/${PACKAGE_NAME}-archive-keyring.gpg] https://brave-browser-apt-${CHANNEL}.s3.brave.com/ stable main" | tee /etc/apt/sources.list.d/brave-browser-${CHANNEL}.list && \
     apt-get -qq update && \
     apt-get -qy install ${PACKAGE_NAME} fonts-dejavu-core fonts-noto-color-emoji patch --no-install-recommends && \
@@ -43,8 +41,9 @@ RUN useradd --create-home --uid 1000 --shell /bin/bash node && \
 
 USER node
 
-# This image ships pnpm but not Node; install Node 24 onto PATH.
-RUN pnpm runtime set node 24 -g -y
+# This image ships pnpm but not Node. Node is installed implicitly by
+# `pnpm install` from `devEngines.runtime` in package.json (onFail: download),
+# which is the single source of truth for the Node version.
 WORKDIR /app
 COPY --chown=node:node package.json pnpm-lock.yaml pnpm-workspace.yaml /app
 RUN pnpm install --frozen-lockfile

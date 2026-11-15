@@ -21,11 +21,9 @@ ARG PACKAGE_NAME=${PACKAGE_NAME%%-release} # strip -release from the package nam
 ENV BRAVE_BINARY=/usr/bin/${PACKAGE_NAME}
 
 ARG DEBIAN_FRONTEND=noninteractive
-ENV DEBIAN_FRONTEND=$DEBIAN_FRONTEND
-ENV AWS_LWA_PORT=3000
 
+# The pnpm base image already ships curl; only the Brave apt repo is added here.
 RUN apt-get -qq update && \
-    apt-get -qy install curl && \
     curl -fsSLo /usr/share/keyrings/${PACKAGE_NAME}-archive-keyring.gpg https://brave-browser-apt-${CHANNEL}.s3.brave.com/${PACKAGE_NAME}-archive-keyring.gpg && \
     echo "deb [signed-by=/usr/share/keyrings/${PACKAGE_NAME}-archive-keyring.gpg] https://brave-browser-apt-${CHANNEL}.s3.brave.com/ stable main" | tee /etc/apt/sources.list.d/brave-browser-${CHANNEL}.list && \
     apt-get -qq update && \
@@ -35,13 +33,18 @@ RUN apt-get -qq update && \
 ARG GIT_COMMIT
 ENV GIT_COMMIT=${GIT_COMMIT}
 
-# This image ships pnpm but not Node; install Node 24 onto PATH.
-RUN pnpm runtime set node 24 -g -y
-
+# The pnpm base image leaves /pnpm world-writable (chmod -R a+rwX in its
+# install script), so everything it contains can be created as the unprivileged
+# user directly. Creating the user first and installing Node afterwards avoids
+# a `chown -R /pnpm`, which would otherwise re-emit the entire Node runtime
+# (~365 MB) into a new layer just to change file ownership.
 RUN useradd --create-home --uid 1000 --shell /bin/bash node && \
-    chown -R node:node /app /pnpm
+    chown node:node /app
 
 USER node
+
+# This image ships pnpm but not Node; install Node 24 onto PATH.
+RUN pnpm runtime set node 24 -g -y
 WORKDIR /app
 COPY --chown=node:node package.json pnpm-lock.yaml pnpm-workspace.yaml /app
 RUN pnpm install --frozen-lockfile

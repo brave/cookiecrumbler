@@ -149,32 +149,37 @@ export const checkPage = async (args) => {
       return report
     }
   }
-  const puppeteerArgs = await puppeteerConfigForArgs({
-    ...args,
-    pathForProfile: workingProfile,
-    proxyServer: proxyUrl,
-    wprGoPorts,
-    // Prevent mid-check Brave component downloads; setup must not set this.
-    invalidateComponentUpdater: true
-  })
-  const pptr = addExtra(vanillaPuppeteer)
-  const stealth = StealthPlugin()
-  stealth.enabledEvasions.delete('user-agent-override')
-  pptr.use(stealth)
-  const userAgentOverridePlugin = userAgentOverride({
-    ...(userAgent ? { userAgent } : {}),
-  })
-  pptr.use(userAgentOverridePlugin)
-
-  const browser = await Sentry.startSpan({ name: 'Launch Browser' }, () => {
-    return pptr.launch(puppeteerArgs)
-  })
-
-  const page = await browser.newPage()
-  // puppeteer-extra's async page hook can race with the first navigation.
-  await userAgentOverridePlugin.onPageCreated(page)
-
+  let browser
+  let page
+  // Teardown steps are guarded individually: a failing close must not skip
+  // the remaining ones (or the tmp/profile/proxy cleanup below)
+  const tryOrWarn = (operation, label) => operation().catch(error => console.warn(`${label} failed:`, error.message))
   try {
+    const puppeteerArgs = await puppeteerConfigForArgs({
+      ...args,
+      pathForProfile: workingProfile,
+      proxyServer: proxyUrl,
+      wprGoPorts,
+      // Prevent mid-check Brave component downloads; setup must not set this.
+      invalidateComponentUpdater: true
+    })
+    const pptr = addExtra(vanillaPuppeteer)
+    const stealth = StealthPlugin()
+    stealth.enabledEvasions.delete('user-agent-override')
+    pptr.use(stealth)
+    const userAgentOverridePlugin = userAgentOverride({
+      ...(userAgent ? { userAgent } : {}),
+    })
+    pptr.use(userAgentOverridePlugin)
+
+    browser = await Sentry.startSpan({ name: 'Launch Browser' }, () => {
+      return pptr.launch(puppeteerArgs)
+    })
+
+    page = await browser.newPage()
+    // puppeteer-extra's async page hook can race with the first navigation.
+    await userAgentOverridePlugin.onPageCreated(page)
+
     if (blockNonHttpRequests) {
       if (!url.startsWith('http://') && !url.startsWith('https://')) {
         throw new Error('Blocked non-HTTP(S) request')
@@ -345,15 +350,14 @@ export const checkPage = async (args) => {
   } catch (err) {
     report.error = err.stack
   } finally {
-    await page.close()
-
-    await browser.close()
+    if (page !== undefined) await tryOrWarn(() => page.close(), 'Page close')
+    if (browser !== undefined) await tryOrWarn(() => browser.close(), 'Browser close')
     if (args.location) {
-      await closeAnonymizedProxy(proxyUrl, true)
+      await tryOrWarn(() => closeAnonymizedProxy(proxyUrl, true), 'Proxy close')
       console.log('Proxy closed')
     }
 
-    await fs.rm(workingProfile, { recursive: true })
+    await tryOrWarn(() => fs.rm(workingProfile, { recursive: true, force: true }), 'Profile removal')
   }
 
   if (wprSession !== undefined) {

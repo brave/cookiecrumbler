@@ -78,7 +78,9 @@ const WEBP_MAX_DIMENSION = 16383
 
 const takeScreenshot = async (page, target, options) => {
   let type = 'webp'
-  if (page !== target) {
+  if (options.fullPage) {
+    // Only full-page captures use the page's content dimensions; element
+    // screenshots are handled by the try/catch fallback below.
     const { width, height } = await page.evaluate(() => ({
       width: document.documentElement.scrollWidth,
       height: document.documentElement.scrollHeight

@@ -77,49 +77,27 @@ const shouldBlockRequest = (request) => {
 // screenshots fall back to PNG on encode failure.
 const WEBP_MAX_DIMENSION = 16383
 
-// Full-page captures are truncated to this many bitmap pixels of height to
-// bound memory and response size on extremely tall pages.
-const MAX_FULLPAGE_BITMAP_HEIGHT = 32768
-
 const CAPTURE_FAILURE_RE = /unable to (capture|encode)/i
 
 const takeScreenshot = async (page, target, options) => {
-  const captureOptions = { ...options, encoding: 'base64' }
   let type = 'webp'
-  let truncated = false
   if (options.fullPage) {
-    // Use Page.getLayoutMetrics over page-controlled properties like
-    // scrollHeight, and account for the device pixel ratio. On failure fall
-    // through to the WebP attempt and rely on the retry below.
-    try {
-      const client = await page.createCDPSession()
-      try {
-        const { cssContentSize } = await client.send('Page.getLayoutMetrics')
-        const dpr = await page.evaluate(() => window.devicePixelRatio).catch(() => 1)
-        const bitmapWidth = Math.ceil(cssContentSize.width * dpr)
-        const bitmapHeight = Math.ceil(cssContentSize.height * dpr)
-        if (bitmapHeight > MAX_FULLPAGE_BITMAP_HEIGHT) {
-          captureOptions.fullPage = false
-          captureOptions.captureBeyondViewport = true
-          captureOptions.clip = { x: 0, y: 0, width: cssContentSize.width, height: Math.floor(MAX_FULLPAGE_BITMAP_HEIGHT / dpr) }
-          truncated = true
-        }
-        if (bitmapWidth > WEBP_MAX_DIMENSION || Math.min(bitmapHeight, MAX_FULLPAGE_BITMAP_HEIGHT) > WEBP_MAX_DIMENSION) {
-          type = 'png'
-        }
-      } finally {
-        await client.detach().catch(() => {})
-      }
-    } catch {}
+    const { width, height } = await page.evaluate(() => ({
+      width: document.documentElement.scrollWidth,
+      height: document.documentElement.scrollHeight
+    }))
+    if (width > WEBP_MAX_DIMENSION || height > WEBP_MAX_DIMENSION) {
+      type = 'png'
+    }
   }
   try {
-    return { data: await target.screenshot({ ...captureOptions, type }), type, truncated }
+    return { data: await target.screenshot({ ...options, type, encoding: 'base64' }), type }
   } catch (err) {
     // Only retry on capture/encode failures, not on timeouts or closed targets.
     if (type === 'webp' && CAPTURE_FAILURE_RE.test(String(err?.message))) {
       console.warn('WebP screenshot failed, retrying as PNG:', err.message)
       try {
-        return { data: await target.screenshot({ ...captureOptions, type: 'png' }), type: 'png', truncated }
+        return { data: await target.screenshot({ ...options, type: 'png', encoding: 'base64' }), type: 'png' }
       } catch (retryErr) {
         err.cause = retryErr
       }
@@ -393,10 +371,9 @@ export const checkPage = async (args) => {
       // Add full page screenshot if explicitly requested or if no element was detected and screenshot is set to "always"
       if (['always', 'fullPage'].includes(includeScreenshot) && !report.screenshot) {
         // TODO: scroll to bottom to trigger lazy-loaded elements
-        const { data: screenshotB64, type: screenshotType, truncated: screenshotTruncated } = await takeScreenshot(page, page, { fullPage: true, omitBackground: true, optimizeForSpeed: true })
+        const { data: screenshotB64, type: screenshotType } = await takeScreenshot(page, page, { fullPage: true, omitBackground: true, optimizeForSpeed: true })
         report.screenshot = screenshotB64
         report.screenshotType = screenshotType
-        report.screenshotTruncated = screenshotTruncated
       }
       report.scrollBlocked = ((await inPageResult.evaluate(r => r.scrollBlocked)) === true)
       report.unsupportedBrowser = (await inPageResult.evaluate(r => r.unsupportedBrowser)) ?? null

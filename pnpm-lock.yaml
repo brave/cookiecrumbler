@@ -208,7 +208,7 @@ importers:
         version: 3.3.0
       koa-compress:
         specifier: ^5.1.1
-        version: 5.2.2
+        version: 5.3.0
       openai:
         specifier: ^6.0.0
         version: 6.49.0(ws@8.22.1)(zod@4.6.7)
@@ -1436,9 +1436,8 @@ packages:
   koa-compose@4.1.0:
     resolution: {integrity: sha512-8ODW8TrDuMYvXRwra/Kh7/rJo9BtOfPc6qO8eAfC80CnCvSjSl0bkRM24X6/XBBEyj0v1nRUQ1LyOy3dbqOWXw==}
 
-  koa-compress@5.2.2:
-    resolution: {integrity: sha512-jpKxmIveX6qdrKaolhvgo2YKl+/uETTHzeVsLWTvJk551HWViWt1hDMO7c+D/P/GEjOVzVK5F7lsrcyOgfhUqg==}
-    engines: {node: '>= 12'}
+  koa-compress@5.3.0:
+    resolution: {integrity: sha512-QiiWvHG5NnM4OHN94EijNBQFn+NzhkR0CKkYxlFMqG7Rbl5Um/JxE91DGACj6ChDfeB4KvCRYcboVaeZX7xAnQ==}
 
   koa-is-json@1.0.0:
     resolution: {integrity: sha512-+97CtHAlWDx0ndt0J8y3P12EWLwTLMXIfMnYDev3wOTwH/RpBGMlfn4bDXlMEg1u73K6XRE9BbUp+5ZAYoRYWw==}
@@ -3314,11 +3313,10 @@ snapshots:
 
   koa-compose@4.1.0: {}
 
-  koa-compress@5.2.2:
+  koa-compress@5.3.0:
     dependencies:
       bytes: 3.1.2
       compressible: 2.0.18
-      http-errors: 2.0.1
       koa-is-json: 1.0.0
       negotiator: 1.1.0
 

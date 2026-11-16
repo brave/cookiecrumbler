@@ -72,6 +72,40 @@ const shouldBlockRequest = (request) => {
   return false
 }
 
+// WebP supports a maximum resolution of 16383x16383. Full-page captures
+// exceeding this in either dimension are preflighted to PNG; element
+// screenshots fall back to PNG on encode failure.
+const WEBP_MAX_DIMENSION = 16383
+
+const CAPTURE_FAILURE_RE = /unable to (capture|encode)/i
+
+const takeScreenshot = async (page, target, options) => {
+  let type = 'webp'
+  if (options.fullPage) {
+    const { width, height } = await page.evaluate(() => ({
+      width: document.documentElement.scrollWidth,
+      height: document.documentElement.scrollHeight
+    }))
+    if (width > WEBP_MAX_DIMENSION || height > WEBP_MAX_DIMENSION) {
+      type = 'png'
+    }
+  }
+  try {
+    return { data: await target.screenshot({ ...options, type, encoding: 'base64' }), type }
+  } catch (err) {
+    // Only retry on capture/encode failures, not on timeouts or closed targets.
+    if (type === 'webp' && CAPTURE_FAILURE_RE.test(String(err?.message))) {
+      console.warn('WebP screenshot failed, retrying as PNG:', err.message)
+      try {
+        return { data: await target.screenshot({ ...options, type: 'png', encoding: 'base64' }), type: 'png' }
+      } catch (retryErr) {
+        err.cause = retryErr
+      }
+    }
+    throw err
+  }
+}
+
 export const checkPage = async (args) => {
   let url = args.url
   const includeScreenshot = args.screenshot ?? true
@@ -314,8 +348,9 @@ export const checkPage = async (args) => {
         if (boundingBox.height === 0 || boundingBox.width === 0) {
           // it won't work for a screenshot. Find another element to capture, somehow
         } else if (includeScreenshot && includeScreenshot !== 'fullPage') {
-          const screenshotB64 = await cookieNotice.innermostHideableElement.screenshot({ omitBackground: true, optimizeForSpeed: true, type: 'webp', encoding: 'base64' })
+          const { data: screenshotB64, type: screenshotType } = await takeScreenshot(page, cookieNotice.innermostHideableElement, { omitBackground: true, optimizeForSpeed: true })
           report.screenshot = screenshotB64
+          report.screenshotType = screenshotType
         }
         if (includeMarkup) {
           report.markup = String(await unified()
@@ -336,8 +371,9 @@ export const checkPage = async (args) => {
       // Add full page screenshot if explicitly requested or if no element was detected and screenshot is set to "always"
       if (['always', 'fullPage'].includes(includeScreenshot) && !report.screenshot) {
         // TODO: scroll to bottom to trigger lazy-loaded elements
-        const screenshotB64 = await page.screenshot({ fullPage: true, omitBackground: true, optimizeForSpeed: true, type: 'webp', encoding: 'base64' })
+        const { data: screenshotB64, type: screenshotType } = await takeScreenshot(page, page, { fullPage: true, omitBackground: true, optimizeForSpeed: true })
         report.screenshot = screenshotB64
+        report.screenshotType = screenshotType
       }
       report.scrollBlocked = ((await inPageResult.evaluate(r => r.scrollBlocked)) === true)
       report.unsupportedBrowser = (await inPageResult.evaluate(r => r.unsupportedBrowser)) ?? null

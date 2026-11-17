@@ -221,10 +221,10 @@ details pre {
   display: block;
 }
 
-.mhtml-link, .wpr-link {
+.wpr-link {
   font-size: 0.5em;
 }
-.mhtml-link a, .wpr-link a {
+.wpr-link a {
   color: #8ad;
 }
 
@@ -288,21 +288,6 @@ details pre {
 
       <fieldset id="dev_menu">
         <legend>Dev menu</legend>
-        <label>MHTML mode:
-          <select id="mhtml-mode-select" name="mhtml-mode">
-            <option value="full">Full</option>
-            <option value="optimized">Optimized</option>
-          </select>
-        </label>
-        <br>
-        <label>Include MHTML:
-          <select id="mhtml-include-select" name="mhtml-include">
-            <option value="never">Never</option>
-            <option value="always">Always</option>
-            <option value="onDetection">On Detection</option>
-          </select>
-        </label>
-        <br>
         <label><input type="checkbox" id="wpr-record" name="wpr-record">Record with WprGo (WebPageReplay)<span id="wpr-record-warning" class="warning-icon" hidden title="Enabled adblock lists can apply network filters that prevent some assets from being fetched. The recording will be missing those assets, which may affect regression tests.">!</span></label>
         <br>
         <label>Replay archive:
@@ -723,22 +708,6 @@ details pre {
         const code = document.createElement('code');
         code.textContent = report.url;
         h2.appendChild(code);
-
-        if (report.mhtml) {
-          const mhtmlLink = document.createElement('a');
-          mhtmlLink.textContent = '[mhtml]';
-          const blob = new Blob([report.mhtml], { type: 'application/x-mimearchive' });
-          const url = window.URL.createObjectURL(blob);
-          mhtmlLink.href = url;
-          const date = new Date(report.timestamp);
-          const dateStr = date.toISOString().slice(0,10);
-          const timeStr = date.toTimeString().slice(0,8);
-          mhtmlLink.download = `${new URL(report.url).hostname}_${dateStr}_${timeStr}.mhtml`;
-          const mhtmlSpan = document.createElement('span');
-          mhtmlSpan.appendChild(mhtmlLink);
-          mhtmlSpan.classList.add('mhtml-link');
-          h2.appendChild(mhtmlSpan);
-        }
         
         if (report.wpr) {
           // report.wpr is base64-encoded; decode it into a Blob for the download link
@@ -990,8 +959,6 @@ details pre {
           screenshot: document.getElementById('full_page_screenshot').checked ? "fullPage" : true,
           slowCheck: document.getElementById('slow_check').checked,
           device: document.getElementById('devices-select').value,
-          mhtmlMode: document.getElementById('mhtml-mode-select')?.value || 'full',
-          includeMhtml: document.getElementById('mhtml-include-select')?.value || 'never',
           viewport: document.getElementById('viewport-select').value,
           userAgent: document.getElementById('user-agent-input')?.value,
           disableFeatures,

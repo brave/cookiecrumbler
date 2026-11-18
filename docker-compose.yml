@@ -90,8 +90,13 @@ services:
       - GATEWAY_PORT=4566
       - MINISTACK_REGION=${MINISTACK_REGION:-us-east-1}
       - S3_PERSIST=1
+      # Visible to the init script below (compose interpolates it from .env)
+      - WPR_ARCHIVES_BUCKET=${WPR_ARCHIVES_BUCKET:-}
     volumes:
       - ministack_s3_data:/tmp/ministack-data/s3
+      # Post-ready init script: creates the archive bucket on fresh stacks
+      # (the aws CLI is bundled and credentials/endpoint are injected)
+      - ./docker/ministack-initaws/ready.d:/docker-entrypoint-initaws.d/ready.d:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4566/_ministack/health')"]
       interval: 10s

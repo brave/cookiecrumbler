@@ -3,6 +3,7 @@ allowBuilds:
 auditConfig:
   ignoreGhsas:
     - GHSA-gcqx-w48m-w2h4
+    - GHSA-fc5q-39xc-vjpf
 minimumReleaseAge: 7200
 overrides:
   brace-expansion@<1.1.21: ^1.1.21

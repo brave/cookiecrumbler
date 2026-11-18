@@ -76,12 +76,11 @@ services:
       timeout: 5s
       retries: 10
 
-  # Local AWS emulator (ministack): dev S3 endpoint for WPR archives today,
-  # Kinesis -> S3 -> Athena indexing later. All services share one port (4566);
-  # connect with AWS_ACCESS_KEY_ID=test / AWS_SECRET_ACCESS_KEY=test.
-  # The :full image includes DuckDB-backed Athena; no docker.sock or Redis
-  # sidecar is needed for S3/Kinesis/Athena. Reachable only on the compose
-  # network at http://ministack:4566 (no host port publish).
+  # Local AWS emulator (ministack): dev S3 endpoint for WPR archives.
+  # All services share one port (4566). The brave_ministack service below
+  # connects with the emulator's test credentials under their standard AWS_*
+  # names. Reachable only on the compose network at http://ministack:4566
+  # (no host port publish).
   ministack:
     image: ministackorg/ministack:full@sha256:6cc353bd071cedef34718febeaac09b80b8e82c8cb0cb0caef44f7b4f87dfe56
     profiles:
@@ -108,6 +107,23 @@ services:
       - ollama
     depends_on:
       - ollama
+
+  # App variant for S3 archive development: same image, plus ministack's test
+  # credentials under their standard AWS_* names so the SDK's default
+  # credential chain resolves them (no code-side credential handling, and the
+  # host .env's AWS_* values - used by litellm for Bedrock - stay untouched).
+  brave_ministack:
+    <<: *brave_base
+    environment:
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_DEFAULT_REGION=${MINISTACK_REGION:-us-east-1}
+      - S3_ENDPOINT_URL=http://ministack:4566
+    profiles:
+      - s3
+    depends_on:
+      ministack:
+        condition: service_healthy
 
   ollama:
     image: ollama/ollama:latest

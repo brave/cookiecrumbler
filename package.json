@@ -21,6 +21,7 @@
   "main": "src/lib.mjs",
   "packageManager": "pnpm@12.21.0+sha512.66fd8278ee28935ce951792d34367ff3af5c432a2756445823029533835b8da529bbe0be5130afd56ed0713fb8789e47bad82d93bd5ae2fe54b15562d6276ef0",
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1168.0",
     "@gorhill/publicsuffixlist": "^3.0.1",
     "@koa/bodyparser": "^6.0.0",
     "@koa/router": "^15.0.0",

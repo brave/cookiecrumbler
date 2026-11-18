@@ -8,10 +8,19 @@
 import { z } from 'zod'
 
 import { isValidHttpUrl } from '../util.mjs'
+import { ARCHIVE_OPTIONS, archiveModeWantsS3 } from '../wprS3.mjs'
 
 const MAX_FILTER_RULES = 1000
 
-export function createCheckRequestSchema ({ validProxies, validDevices, validViewports, validDisableFeatures, validAdblockLists }) {
+export function createCheckRequestSchema ({
+  validProxies,
+  validDevices,
+  validViewports,
+  validDisableFeatures,
+  validAdblockLists,
+  validArchiveModes = ARCHIVE_OPTIONS,
+  wprS3Enabled = false
+}) {
   // The UI submits empty strings for "unset" dropdowns; only truthy values
   // must come from the configured catalog
   const inList = list => (value) => !value || list.includes(value)
@@ -23,13 +32,27 @@ export function createCheckRequestSchema ({ validProxies, validDevices, validVie
     // wpr read arbitrary files. Upload the archive via wpr.data instead
     // (materialized under a randomized server-side tmp path). never +
     // optional: only fails when a value is actually supplied
-    path: z.never({ message: 'wpr.path is not supported; upload the archive via wpr.data' }).optional()
+    path: z.never({ message: 'wpr.path is not supported; upload the archive via wpr.data' }).optional(),
+    // Archive handling for record captures: inline base64 (default), S3
+    // storage with a key-only response, or both; '' is the UI's unset value
+    archive: z.string().refine(
+      mode => validArchiveModes.includes(mode),
+      { message: `wpr.archive must be one of ${JSON.stringify(validArchiveModes)}` }
+    ).optional()
   }).strict().superRefine((wpr, ctx) => {
     if (wpr.action === 'replay' && wpr.data === undefined) {
       ctx.addIssue({ code: 'custom', path: ['data'], message: 'wpr.data is required for replay action' })
     }
     if (wpr.data !== undefined && wpr.action !== 'replay') {
       ctx.addIssue({ code: 'custom', path: ['data'], message: 'wpr.data is only supported for replay action' })
+    }
+    if (wpr.archive !== undefined) {
+      if (wpr.action !== 'record' && wpr.archive !== '') {
+        ctx.addIssue({ code: 'custom', path: ['archive'], message: 'wpr.archive is only supported for record action' })
+      }
+      if (archiveModeWantsS3(wpr.archive) && !wprS3Enabled) {
+        ctx.addIssue({ code: 'custom', path: ['archive'], message: 'S3 archive storage is not configured (WPR_ARCHIVES_BUCKET)' })
+      }
     }
   })
 

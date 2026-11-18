@@ -4,10 +4,8 @@ import { constants as fsConstants } from 'fs'
 import fs from 'fs/promises'
 import os from 'os'
 import path from 'path'
-import nodeUrl from 'node:url'
 import { setTimeout } from 'node:timers/promises'
 
-import suffixList from '@gorhill/publicsuffixlist'
 import rehypeFormat from 'rehype-format'
 import rehypeParse from 'rehype-parse'
 import rehypeStringify from 'rehype-stringify'
@@ -22,7 +20,9 @@ import vanillaPuppeteer, { KnownDevices } from 'puppeteer-core'
 import userAgentOverride from './plugins/user-agent-override.mjs'
 
 import { puppeteerConfigForArgs } from './puppeteer.mjs'
-import { templateProfilePathForArgs, toggleAdblocklists, proxyUrlWithAuth, fixupBundleStackTrace, getBundlePaths } from './setupUtil.mjs'
+import { templateProfilePathForArgs, toggleAdblocklists, classifyCapture, getOptionalDefaultComponentIds, proxyUrlWithAuth, fixupBundleStackTrace, getBundlePaths } from './setupUtil.mjs'
+import { pslGetDomain } from './suffixInfo.mjs'
+import { buildArchiveKey, uploadWprArchive, archiveModeWantsS3, wprS3Bucket } from './wprS3.mjs'
 import { generateRandomToken } from './util.mjs'
 
 import { cookieNoticeClassifier, browserNoticeClassifier } from './text-classification.mjs'
@@ -48,21 +48,13 @@ const inPageAPI = {
   classifyBrowserNoticeText: (innerText) => {
     return browserNoticeClassifier(innerText, openai)
   },
-  getETLDP1: (() => {
-    let init
-    return (hostname) => {
-      if (init === undefined) {
-        init = new Promise(resolve => {
-          fs.readFile(path.join(import.meta.dirname, '..', 'public_suffix_list.dat'), 'utf8')
-            .then(data => {
-              suffixList.parse(data, nodeUrl.domainToASCII)
-              resolve(true)
-            })
-        })
-      }
-      return init.then(() => suffixList.getDomain(hostname))
-    }
-  })()
+  // Delegates to the shared PSL singleton in suffixInfo.mjs so the list is
+  // parsed only once per process even with archive storage in use. The
+  // hostname is passed through unchanged (it may include a port, which the
+  // parser handles the same way the pre-singleton implementation did).
+  getETLDP1: (hostname) => {
+    return pslGetDomain(hostname)
+  }
 }
 
 const shouldBlockRequest = (request) => {
@@ -118,7 +110,7 @@ export const checkPage = async (args) => {
   const slowCheck = args.slowCheck ?? false
   const blockNonHttpRequests = args.blockNonHttpRequests ?? true
   const deviceName = args.device
-  const wprGo = args.wprGo
+  const wpr = args.wpr
   const userAgent = args.userAgent
 
   const report = {
@@ -151,6 +143,26 @@ export const checkPage = async (args) => {
     return report
   }
   const listCatalogPath = path.join(workingProfile, 'gkboaolpopklhgplhaaiboijnklogmbc', '999.999', 'list_catalog.json')
+  // Only record captures carry a filter-list class; reads of the optional
+  // list set must not fail the check itself, so anything unexpected falls
+  // back to the honest "custom" bucket
+  let captureClass = 'custom'
+  if (args.wpr?.action === 'record') {
+    try {
+      // The pre-patch working catalog defines the exposed optional lists
+      // (all shipped default-enabled) and lets classification detect
+      // deviations on other entries; toggleAdblocklists must run after
+      const listCatalog = JSON.parse(await fs.readFile(listCatalogPath, 'utf8'))
+      captureClass = classifyCapture({
+        adblockLists: args.adblockLists,
+        additionalFilterRules: args.additionalFilterRules,
+        optionalListIds: Object.keys(getOptionalDefaultComponentIds({ profileDir: workingProfile })),
+        listCatalog
+      })
+    } catch (error) {
+      console.warn(`Capture classification failed: ${error.message}`)
+    }
+  }
   toggleAdblocklists(listCatalogPath, args.adblockLists ?? {})
 
   let proxyUrl
@@ -177,7 +189,7 @@ export const checkPage = async (args) => {
     await fs.writeFile(localStatePath, JSON.stringify(localState))
   }
 
-  if (wprGo?.action === 'replay' && args.location) {
+  if (wpr?.action === 'replay' && args.location) {
     // Replay routes traffic through the wpr process, which cannot be combined
     // with a client-specified proxy; netlog recording does not use wpr and
     // works with proxies.
@@ -194,14 +206,21 @@ export const checkPage = async (args) => {
     proxyUrl = await anonymizeProxy(proxyUrlWithAuth(args.location))
     console.log(`Started local proxy server: ${proxyUrl}`)
   }
-  if (wprGo !== undefined) {
+  if (wpr !== undefined) {
     try {
       reportProgress('starting-wpr')
       // Record mode has no archive to pick a first URL from
-      if (wprGo.action === 'record' && !url) {
+      if (wpr.action === 'record' && !url) {
         throw new WprGoError('A URL is required when recording a WprGo archive')
       }
-      wprSession = new WprGoSession(wprGo)
+      wprSession = new WprGoSession({
+        ...wpr,
+        captureInfo: {
+          captureClass,
+          adblockLists: args.adblockLists ?? {},
+          additionalFilterRules: args.additionalFilterRules
+        }
+      })
       const prepared = await wprSession.prepare({ url })
       if (!url) {
         if (prepared.firstUrl === undefined) {
@@ -496,7 +515,24 @@ export const checkPage = async (args) => {
       if (browser !== undefined || wprSession.action === 'replay') {
         const archiveData = await wprSession.stop()
         if (archiveData !== undefined) {
-          report.wpr = archiveData
+          const archiveMode = args.wpr?.archive
+          if (archiveMode !== 's3') {
+            report.wpr = archiveData
+          }
+          if (archiveModeWantsS3(archiveMode)) {
+            try {
+              const key = await buildArchiveKey({ captureClass, url, recordedAt: wprSession.recordedAt })
+              await uploadWprArchive(Buffer.from(archiveData, 'base64'), key)
+              report.wprS3Key = key
+              report.wprS3Bucket = wprS3Bucket()
+              console.log(`Stored WprGo archive in S3: s3://${wprS3Bucket()}/${key}`)
+            } catch (error) {
+              // Storage is auxiliary: the capture itself stays valid, and
+              // 's3' callers detect the failure via the key's absence
+              console.warn(`WprGo S3 storage failed: ${error.message}`)
+              report.wprS3Error = error.message
+            }
+          }
         }
       }
     } catch (error) {

@@ -10,16 +10,16 @@
     "setup": "node src/setup.mjs",
     "serve": "node --import ./src/instrument.mjs src/api.mjs",
     "rebrowser-patches": "rebrowser-patches patch --packageName puppeteer-core",
-    "test": "node --test test/*.mjs",
+    "test": "node --test test/test.mjs test/browser-launch-cleanup.mjs",
     "test:wpr": "node --test --test-name-pattern \"WPR replay\" test/test.mjs",
-    "test:ci": "node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=@reporters/github --test-reporter-destination=stdout test/*.mjs",
+    "test:ci": "node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=@reporters/github --test-reporter-destination=stdout test/test.mjs test/browser-launch-cleanup.mjs",
     "lint": "eslint",
     "lint-fix": "eslint --fix",
     "build": "esbuild --bundle --format=cjs --sourcemap --outdir=bundles src/inpage/index.mjs",
     "watch": "pnpm run build --watch"
   },
   "main": "src/lib.mjs",
-  "packageManager": "pnpm@12.14.0+sha512.c18ba6d87993d3d164cb5e8948f32b2c06ee854487e06cd8d86781342fb3e5bb4634367034711e86802baa9c37bea906ce1929ad08d70884c97d801df13389a6",
+  "packageManager": "pnpm@12.21.0+sha512.66fd8278ee28935ce951792d34367ff3af5c432a2756445823029533835b8da529bbe0be5130afd56ed0713fb8789e47bad82d93bd5ae2fe54b15562d6276ef0",
   "dependencies": {
     "@gorhill/publicsuffixlist": "^3.0.1",
     "@koa/bodyparser": "^6.0.0",
@@ -31,7 +31,7 @@
     "koa-compress": "^5.1.1",
     "openai": "^6.0.0",
     "proxy-chain": "^3.0.0",
-    "puppeteer-core": "~25.14.0",
+    "puppeteer-core": "~25.16.0",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin": "^3.2.3",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
@@ -45,14 +45,14 @@
   "devDependencies": {
     "@reporters/github": "2.1.4",
     "esbuild": "0.28.2",
-    "eslint": "10.13.0",
+    "eslint": "10.14.0",
     "neostandard": "0.14.1",
     "tree-walker-shadow-dom": "1.0.0"
   },
   "devEngines": {
     "runtime": {
       "name": "node",
-      "version": "24.22.1",
+      "version": "24.22.3",
       "onFail": "download"
     }
   }

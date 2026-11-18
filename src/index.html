@@ -628,7 +628,7 @@ details pre {
 
         if (report.screenshot !== undefined) {
           const img = document.createElement('img');
-          img.src = 'data:image/webp;base64,' + report.screenshot;
+          img.src = 'data:image/' + (report.screenshotType || 'webp') + ';base64,' + report.screenshot;
           img.onload = function() {
               // if the screenshot is large, display it in a details element
               // TODO: adjust size based on user screen size?

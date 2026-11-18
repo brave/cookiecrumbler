@@ -1,6 +1,6 @@
 'use strict'
 
-import { existsSync, readdirSync, mkdirSync, writeFileSync, constants as fsConstants } from 'fs'
+import { constants as fsConstants } from 'fs'
 import fs from 'fs/promises'
 import os from 'os'
 import path from 'path'
@@ -22,7 +22,7 @@ import vanillaPuppeteer, { KnownDevices } from 'puppeteer-core'
 import userAgentOverride from './plugins/user-agent-override.mjs'
 
 import { puppeteerConfigForArgs } from './puppeteer.mjs'
-import { templateProfilePathForArgs, parseListCatalogComponentIds, isValidChromeComponentId, isKeeplistedComponentId, getExtensionVersion, getOptionalDefaultComponentIds, replaceVersion, toggleAdblocklists, proxyUrlWithAuth, checkAllComponentsRegistered, fixupBundleStackTrace, getBundlePaths } from './setupUtil.mjs'
+import { templateProfilePathForArgs, toggleAdblocklists, proxyUrlWithAuth, fixupBundleStackTrace, getBundlePaths } from './setupUtil.mjs'
 import { generateRandomToken } from './util.mjs'
 
 import { cookieNoticeClassifier, browserNoticeClassifier } from './text-classification.mjs'
@@ -70,6 +70,40 @@ const shouldBlockRequest = (request) => {
   }
 
   return false
+}
+
+// WebP supports a maximum resolution of 16383x16383. Full-page captures
+// exceeding this in either dimension are preflighted to PNG; element
+// screenshots fall back to PNG on encode failure.
+const WEBP_MAX_DIMENSION = 16383
+
+const CAPTURE_FAILURE_RE = /unable to (capture|encode)/i
+
+const takeScreenshot = async (page, target, options) => {
+  let type = 'webp'
+  if (options.fullPage) {
+    const { width, height } = await page.evaluate(() => ({
+      width: document.documentElement.scrollWidth,
+      height: document.documentElement.scrollHeight
+    }))
+    if (width > WEBP_MAX_DIMENSION || height > WEBP_MAX_DIMENSION) {
+      type = 'png'
+    }
+  }
+  try {
+    return { data: await target.screenshot({ ...options, type, encoding: 'base64' }), type }
+  } catch (err) {
+    // Only retry on capture/encode failures, not on timeouts or closed targets.
+    if (type === 'webp' && CAPTURE_FAILURE_RE.test(String(err?.message))) {
+      console.warn('WebP screenshot failed, retrying as PNG:', err.message)
+      try {
+        return { data: await target.screenshot({ ...options, type: 'png', encoding: 'base64' }), type: 'png' }
+      } catch (retryErr) {
+        err.cause = retryErr
+      }
+    }
+    throw err
+  }
 }
 
 export const checkPage = async (args) => {
@@ -149,43 +183,37 @@ export const checkPage = async (args) => {
       return report
     }
   }
-  const puppeteerArgs = await puppeteerConfigForArgs({
-    ...args,
-    pathForProfile: workingProfile,
-    proxyServer: proxyUrl,
-    wprGoPorts,
-    // Prevent mid-check Brave component downloads; setup must not set this.
-    invalidateComponentUpdater: true
-  })
-  const pptr = addExtra(vanillaPuppeteer)
-  const stealth = StealthPlugin()
-  stealth.enabledEvasions.delete('user-agent-override')
-  pptr.use(stealth)
-  const userAgentOverridePlugin = userAgentOverride({
-    ...(userAgent ? { userAgent } : {}),
-  })
-  pptr.use(userAgentOverridePlugin)
-
-  const browser = await Sentry.startSpan({ name: 'Launch Browser' }, () => {
-    return pptr.launch(puppeteerArgs)
-  }).catch(async error => {
-    // The normal cleanup block is reached only after a browser has launched.
-    const cleanupResults = await Promise.allSettled([
-      fs.rm(workingProfile, { recursive: true, force: true }),
-      proxyUrl === undefined ? undefined : closeAnonymizedProxy(proxyUrl, true),
-      wprSession?.stop().finally(() => wprSession.cleanup())
-    ])
-    for (const result of cleanupResults) {
-      if (result.status === 'rejected') Sentry.captureException(result.reason)
-    }
-    throw error
-  })
-
-  const page = await browser.newPage()
-  // puppeteer-extra's async page hook can race with the first navigation.
-  await userAgentOverridePlugin.onPageCreated(page)
-
+  let browser
+  let page
+  // Teardown steps are guarded individually: a failing close must not skip
+  // the remaining ones (or the tmp/profile/proxy cleanup below)
+  const tryOrWarn = (operation, label) => operation().catch(error => console.warn(`${label} failed:`, error.message))
   try {
+    const puppeteerArgs = await puppeteerConfigForArgs({
+      ...args,
+      pathForProfile: workingProfile,
+      proxyServer: proxyUrl,
+      wprGoPorts,
+      // Prevent mid-check Brave component downloads; setup must not set this.
+      invalidateComponentUpdater: true
+    })
+    const pptr = addExtra(vanillaPuppeteer)
+    const stealth = StealthPlugin()
+    stealth.enabledEvasions.delete('user-agent-override')
+    pptr.use(stealth)
+    const userAgentOverridePlugin = userAgentOverride({
+      ...(userAgent ? { userAgent } : {}),
+    })
+    pptr.use(userAgentOverridePlugin)
+
+    browser = await Sentry.startSpan({ name: 'Launch Browser' }, () => {
+      return pptr.launch(puppeteerArgs)
+    })
+
+    page = await browser.newPage()
+    // puppeteer-extra's async page hook can race with the first navigation.
+    await userAgentOverridePlugin.onPageCreated(page)
+
     if (blockNonHttpRequests) {
       if (!url.startsWith('http://') && !url.startsWith('https://')) {
         throw new Error('Blocked non-HTTP(S) request')
@@ -320,8 +348,9 @@ export const checkPage = async (args) => {
         if (boundingBox.height === 0 || boundingBox.width === 0) {
           // it won't work for a screenshot. Find another element to capture, somehow
         } else if (includeScreenshot && includeScreenshot !== 'fullPage') {
-          const screenshotB64 = await cookieNotice.innermostHideableElement.screenshot({ omitBackground: true, optimizeForSpeed: true, type: 'webp', encoding: 'base64' })
+          const { data: screenshotB64, type: screenshotType } = await takeScreenshot(page, cookieNotice.innermostHideableElement, { omitBackground: true, optimizeForSpeed: true })
           report.screenshot = screenshotB64
+          report.screenshotType = screenshotType
         }
         if (includeMarkup) {
           report.markup = String(await unified()
@@ -342,8 +371,9 @@ export const checkPage = async (args) => {
       // Add full page screenshot if explicitly requested or if no element was detected and screenshot is set to "always"
       if (['always', 'fullPage'].includes(includeScreenshot) && !report.screenshot) {
         // TODO: scroll to bottom to trigger lazy-loaded elements
-        const screenshotB64 = await page.screenshot({ fullPage: true, omitBackground: true, optimizeForSpeed: true, type: 'webp', encoding: 'base64' })
+        const { data: screenshotB64, type: screenshotType } = await takeScreenshot(page, page, { fullPage: true, omitBackground: true, optimizeForSpeed: true })
         report.screenshot = screenshotB64
+        report.screenshotType = screenshotType
       }
       report.scrollBlocked = ((await inPageResult.evaluate(r => r.scrollBlocked)) === true)
       report.unsupportedBrowser = (await inPageResult.evaluate(r => r.unsupportedBrowser)) ?? null
@@ -356,15 +386,14 @@ export const checkPage = async (args) => {
   } catch (err) {
     report.error = err.stack
   } finally {
-    await page.close()
-
-    await browser.close()
+    if (page !== undefined) await tryOrWarn(() => page.close(), 'Page close')
+    if (browser !== undefined) await tryOrWarn(() => browser.close(), 'Browser close')
     if (args.location) {
-      await closeAnonymizedProxy(proxyUrl, true)
+      await tryOrWarn(() => closeAnonymizedProxy(proxyUrl, true), 'Proxy close')
       console.log('Proxy closed')
     }
 
-    await fs.rm(workingProfile, { recursive: true })
+    await tryOrWarn(() => fs.rm(workingProfile, { recursive: true, force: true }), 'Profile removal')
   }
 
   if (wprSession !== undefined) {
@@ -374,9 +403,10 @@ export const checkPage = async (args) => {
         report.wpr = archiveData
       }
     } catch (error) {
-      report.error = error instanceof WprGoError ? error.message : `WprGo failure: ${error.message}`
+      report.error ??= error instanceof WprGoError ? error.message : `WprGo failure: ${error.message}`
+      console.warn('WprGo stop failed:', error.message)
     } finally {
-      await wprSession.cleanup()
+      await tryOrWarn(() => wprSession.cleanup(), 'WprGo cleanup')
     }
   }
 
@@ -384,93 +414,4 @@ export const checkPage = async (args) => {
   return report
 }
 
-export const prepareProfile = async (args) => {
-  const tmpProfile = await fs.mkdtemp(path.join(os.tmpdir(), 'cookiecrumbler-setup-profile-'))
-  const templateProfile = templateProfilePathForArgs(args)
-
-  if (existsSync(templateProfile)) {
-    // Template profile already exists; return early
-    console.log('profile directory already exists')
-    return
-  } else {
-    // Create template profile directory
-    await fs.mkdir(templateProfile)
-  }
-
-  await fetch('https://publicsuffix.org/list/public_suffix_list.dat')
-    .then(resp => resp.text())
-    .then(body => fs.writeFile(path.join(import.meta.dirname, '..', 'public_suffix_list.dat'), body))
-
-  console.log('Performing initial profile setup...')
-  const puppeteerArgs = await puppeteerConfigForArgs({ ...args, pathForProfile: tmpProfile })
-
-  const browser = await vanillaPuppeteer.launch(puppeteerArgs)
-
-  const page = await browser.newPage()
-  // Give the browser some time to register/download adblock components
-  console.log('Wait until all components are registered')
-  await checkAllComponentsRegistered(page)
-
-  console.log('Updating Brave components')
-  await page.goto('brave://components', { waitUntil: 'domcontentloaded' })
-  const buttons = await page.$$('.button-check-update')
-  for (const button of buttons) {
-    const buttonId = await page.evaluate(el => el.getAttribute('id'), button)
-    if (buttonId) {
-      console.log('Updating component:', buttonId)
-      await button.click()
-      await setTimeout(100) // Wait for 100ms between clicks
-    }
-  }
-
-  console.log('Waiting for components to update...')
-  await setTimeout(500)
-  await page.waitForFunction(() => {
-    const elements = document.querySelectorAll('span[id^="status-"]')
-    return Array.from(elements)
-      .map(el => el.innerText.trim())
-      .filter(text => text !== '')
-      .every(spanText => ['Component already up to date', 'Up-to-date', 'Component updated'].includes(spanText))
-  }, { timeout: 60000 })
-  console.log('Components updated')
-
-  await page.close()
-
-  await browser.close()
-
-  // Clean up stale Singleton Lock
-  await fs.rm(`${tmpProfile}/SingletonLock`, { force: true })
-  // Clean up crx cache
-  await fs.rm(`${tmpProfile}/component_crx_cache`, { force: true, recursive: true })
-
-  const adblockComponents = parseListCatalogComponentIds({ profileDir: tmpProfile })
-
-  for (const fileName of readdirSync(tmpProfile)) {
-    // check if valid component id and not in keeplist
-    if (isValidChromeComponentId({ id: fileName }) && !isKeeplistedComponentId({ id: fileName, additionalComponentList: adblockComponents })) {
-      console.log('patching component: ', fileName)
-      const extensionDir = path.join(tmpProfile, fileName)
-      const versionDir = getExtensionVersion(extensionDir)
-      const srcManifest = path.join(extensionDir, versionDir, 'manifest.json')
-      const destPath = path.join(templateProfile, fileName, '999.999')
-      replaceVersion({ fileName: srcManifest })
-      mkdirSync(destPath, { recursive: true })
-      if (fileName === 'gkboaolpopklhgplhaaiboijnklogmbc') {
-        // copy List Catalog files after modifying version
-        await fs.cp(path.join(extensionDir, versionDir), destPath, { recursive: true, mode: fsConstants.COPYFILE_FICLONE })
-      } else {
-        // only copy the manifest for all other components
-        await fs.cp(srcManifest, path.join(destPath, 'manifest.json'), { mode: fsConstants.COPYFILE_FICLONE })
-      }
-    } else {
-      // copy all other files in profile directory, as well as keeplisted components
-      await fs.cp(`${tmpProfile}/${fileName}`, `${templateProfile}/${fileName}`, { recursive: true, mode: fsConstants.COPYFILE_FICLONE })
-    }
-  }
-
-  const optionalDefaultComponents = getOptionalDefaultComponentIds({ profileDir: tmpProfile })
-  writeFileSync(path.join(import.meta.dirname, '..', 'adblock_lists.json'), JSON.stringify(optionalDefaultComponents, null, 2))
-
-  await fs.rm(tmpProfile, { recursive: true })
-  console.log('Done. Profile has been prepared for future use.')
-}
+export { prepareProfile } from './prepareProfile.mjs'

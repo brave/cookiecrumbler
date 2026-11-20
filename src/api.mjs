@@ -7,6 +7,7 @@ import { PassThrough } from 'stream'
 import path from 'path'
 import process from 'process'
 import os from 'os'
+import { STATUS_CODES } from 'node:http'
 
 import './instrument.mjs'
 import Koa from 'koa'
@@ -36,16 +37,23 @@ const semaphore = withTimeout(new Semaphore(maxConcurrency), maxConcurrencyWaitM
 const browserBinaryPath = process.argv[2] || '/usr/bin/brave'
 const port = process.argv[3] || 3000
 
-if (!existsSync(browserBinaryPath)) {
-  console.error(`Path ${browserBinaryPath} does not exist.`)
-  console.error('Please specify an alternative on the command line.')
-  process.exit(-1)
-}
+export const app = new Koa()
+app.use(async (ctx, next) => {
+  try {
+    await next()
+  } catch (error) {
+    if (ctx.headerSent || !ctx.writable) {
+      throw error
+    }
 
-console.log(`Browser binary: ${browserBinaryPath}`)
-console.log(`Port: ${port}`)
-
-const app = new Koa()
+    const err = error instanceof Error ? error : new Error('Unhandled request error', { cause: error })
+    const status = err.status || err.statusCode
+    ctx.status = typeof status === 'number' && status >= 400 && STATUS_CODES[status] ? status : 500
+    ctx.type = 'json'
+    ctx.body = { error: STATUS_CODES[ctx.status], identified: false }
+    ctx.app.emit('error', err, ctx)
+  }
+})
 // Raised json limit: WprGo replay archives are uploaded base64-encoded in the JSON body
 app.use(bodyParser({ jsonLimit: '200mb' }))
 // Z_SYNC_FLUSH flushes the compressor on every write, so streamed bodies
@@ -387,4 +395,14 @@ router.post('/check/stream', async (ctx) => {
 app.use(router.routes())
 app.use(router.allowedMethods())
 
-app.listen(port)
+if (import.meta.main) {
+  if (!existsSync(browserBinaryPath)) {
+    console.error(`Path ${browserBinaryPath} does not exist.`)
+    console.error('Please specify an alternative on the command line.')
+    process.exit(-1)
+  }
+
+  console.log(`Browser binary: ${browserBinaryPath}`)
+  console.log(`Port: ${port}`)
+  app.listen(port)
+}

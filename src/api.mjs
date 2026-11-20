@@ -103,8 +103,6 @@ const CHECK_API_FIELDS = [
   'location',
   'slowCheck',
   'device',
-  'mhtmlMode',
-  'includeMhtml',
   'viewport',
   'userAgent',
   'disableFeatures',

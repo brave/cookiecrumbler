@@ -118,8 +118,6 @@ export const checkPage = async (args) => {
   const slowCheck = args.slowCheck ?? false
   const blockNonHttpRequests = args.blockNonHttpRequests ?? true
   const deviceName = args.device
-  const mhtmlMode = args.mhtmlMode ?? 'full'
-  const includeMhtml = args.includeMhtml ?? 'never'
   const wprGo = args.wprGo
   const userAgent = args.userAgent
 
@@ -390,27 +388,8 @@ export const checkPage = async (args) => {
       }
 
       const l = await inPageResult.evaluate(r => r.cookieNotices.length)
-      const cookieNoticeDetected = l === 1
 
       reportProgress('capturing-artifacts')
-      // Capture MHTML if requested
-      if (includeMhtml === 'always' || (includeMhtml === 'onDetection' && cookieNoticeDetected)) {
-        const session = await page.target().createCDPSession()
-        try {
-          // Limited to 256MB
-          // https://source.chromium.org/chromium/chromium/src/+/main:content/browser/devtools/devtools_http_handler.cc;l=97?q=kSendBufferSizeForDevTools&ss=chromium
-          const mhtmlData = await session.send('Page.captureSnapshot', { format: 'mhtml' })
-
-          if (mhtmlMode === 'optimized') {
-            // TODO: Implement optimization logic here
-            console.warn('MHTML optimization not yet implemented')
-          }
-
-          report.mhtml = mhtmlData.data
-        } finally {
-          await session.detach()
-        }
-      }
 
       report.url = page.url()
 

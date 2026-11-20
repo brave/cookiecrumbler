@@ -23,8 +23,8 @@ describe('POST /check errors', () => {
     }
   })
 
-  function post (body, contentType = 'application/json') {
-    return fetch(`http://127.0.0.1:${server.address().port}/check`, {
+  function post (body, contentType = 'application/json', route = '/check') {
+    return fetch(`http://127.0.0.1:${server.address().port}${route}`, {
       method: 'POST',
       headers: { 'Content-Type': contentType },
       body,
@@ -89,6 +89,77 @@ describe('POST /check errors', () => {
       await assertJsonError(t, await post(validRequest), 429, {
         error: 'Too Many Requests: server is at capacity'
       })
+    } finally {
+      release.resolve()
+      const response = await first
+      await response.body.cancel()
+    }
+  })
+
+  it('formats malformed JSON before streaming headers are sent', async (t) => {
+    await assertJsonError(t, await post('{', 'application/json', '/check/stream'), 400, {
+      error: 'Bad Request',
+      identified: false
+    })
+  })
+
+  it('keeps streaming-route validation errors in JSON', async (t) => {
+    const response = await post('{"url":"file:///fixture"}', 'application/json', '/check/stream')
+    await assertJsonError(t, response, 400, {
+      error: 'Bad Request: url must be a valid http or https URL'
+    })
+  })
+
+  it('keeps check failures in-band after streaming headers are sent', async (t) => {
+    const failure = new Error('fixture streamed failure')
+    const release = Promise.withResolvers()
+    t.mock.method(fs, 'mkdtemp', async () => {
+      await release.promise
+      throw failure
+    })
+
+    try {
+      const response = await post(validRequest, 'application/json', '/check/stream')
+      t.assert.strictEqual(response.status, 200)
+      t.assert.match(response.headers.get('content-type'), /^text\/event-stream\b/)
+      release.resolve()
+      const body = await response.text()
+      t.assert.match(body, /event: progress\ndata: .*"phase":"queued"/)
+      const errorEvent = body.match(/event: error\ndata: (.*)\n/)
+      t.assert.ok(errorEvent)
+      t.assert.strictEqual(typeof JSON.parse(errorEvent[1]).error, 'string')
+      t.assert.notStrictEqual(JSON.parse(errorEvent[1]).error, '')
+      t.assert.doesNotMatch(body, /event: report\n/)
+    } finally {
+      release.resolve()
+    }
+  })
+
+  it('keeps capacity timeouts in-band on the streaming route', async (t) => {
+    const started = Promise.withResolvers()
+    const release = Promise.withResolvers()
+    t.mock.method(fs, 'mkdtemp', async () => {
+      started.resolve()
+      await release.promise
+      throw new Error('fixture check failed')
+    })
+
+    const first = post(validRequest)
+    try {
+      await Promise.race([
+        started.promise,
+        first.then(() => t.assert.fail('First request completed without acquiring a check slot'))
+      ])
+      const response = await post(validRequest, 'application/json', '/check/stream')
+      t.assert.strictEqual(response.status, 200)
+      t.assert.match(response.headers.get('content-type'), /^text\/event-stream\b/)
+      const body = await response.text()
+      const errorEvent = body.match(/event: error\ndata: (.*)\n/)
+      t.assert.ok(errorEvent)
+      t.assert.deepStrictEqual(JSON.parse(errorEvent[1]), {
+        error: 'Too Many Requests: server is at capacity'
+      })
+      t.assert.doesNotMatch(body, /event: report\n/)
     } finally {
       release.resolve()
       const response = await first

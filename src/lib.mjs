@@ -1,6 +1,6 @@
 'use strict'
 
-import { existsSync, readdirSync, mkdirSync, writeFileSync, constants as fsConstants } from 'fs'
+import { constants as fsConstants } from 'fs'
 import fs from 'fs/promises'
 import os from 'os'
 import path from 'path'
@@ -22,11 +22,16 @@ import vanillaPuppeteer, { KnownDevices } from 'puppeteer-core'
 import userAgentOverride from './plugins/user-agent-override.mjs'
 
 import { puppeteerConfigForArgs } from './puppeteer.mjs'
-import { templateProfilePathForArgs, parseListCatalogComponentIds, isValidChromeComponentId, isKeeplistedComponentId, getExtensionVersion, getOptionalDefaultComponentIds, replaceVersion, toggleAdblocklists, proxyUrlWithAuth, checkAllComponentsRegistered, fixupBundleStackTrace, getBundlePaths } from './setupUtil.mjs'
+import { templateProfilePathForArgs, toggleAdblocklists, proxyUrlWithAuth, fixupBundleStackTrace, getBundlePaths } from './setupUtil.mjs'
 import { generateRandomToken } from './util.mjs'
 
 import { cookieNoticeClassifier, browserNoticeClassifier } from './text-classification.mjs'
 import { WprGoSession, WprGoError } from './wpr.mjs'
+
+// Upper bound for screenshots streamed while the page loads and settles;
+// keeps the streamed transfer a small multiple of the final report size.
+const MAX_INTERIM_FRAMES = 8
+const INTERIM_FRAME_INTERVAL_MS = 1000
 
 const openai = new OpenAI({
   baseURL: process.env.OPENAI_BASE_URL || 'http://localhost:11434/v1',
@@ -72,6 +77,40 @@ const shouldBlockRequest = (request) => {
   return false
 }
 
+// WebP supports a maximum resolution of 16383x16383. Full-page captures
+// exceeding this in either dimension are preflighted to PNG; element
+// screenshots fall back to PNG on encode failure.
+const WEBP_MAX_DIMENSION = 16383
+
+const CAPTURE_FAILURE_RE = /unable to (capture|encode)/i
+
+const takeScreenshot = async (page, target, options) => {
+  let type = 'webp'
+  if (options.fullPage) {
+    const { width, height } = await page.evaluate(() => ({
+      width: document.documentElement.scrollWidth,
+      height: document.documentElement.scrollHeight
+    }))
+    if (width > WEBP_MAX_DIMENSION || height > WEBP_MAX_DIMENSION) {
+      type = 'png'
+    }
+  }
+  try {
+    return { data: await target.screenshot({ ...options, type, encoding: 'base64' }), type }
+  } catch (err) {
+    // Only retry on capture/encode failures, not on timeouts or closed targets.
+    if (type === 'webp' && CAPTURE_FAILURE_RE.test(String(err?.message))) {
+      console.warn('WebP screenshot failed, retrying as PNG:', err.message)
+      try {
+        return { data: await target.screenshot({ ...options, type: 'png', encoding: 'base64' }), type: 'png' }
+      } catch (retryErr) {
+        err.cause = retryErr
+      }
+    }
+    throw err
+  }
+}
+
 export const checkPage = async (args) => {
   let url = args.url
   const includeScreenshot = args.screenshot ?? true
@@ -79,8 +118,6 @@ export const checkPage = async (args) => {
   const slowCheck = args.slowCheck ?? false
   const blockNonHttpRequests = args.blockNonHttpRequests ?? true
   const deviceName = args.device
-  const mhtmlMode = args.mhtmlMode ?? 'full'
-  const includeMhtml = args.includeMhtml ?? 'never'
   const wprGo = args.wprGo
   const userAgent = args.userAgent
 
@@ -90,7 +127,19 @@ export const checkPage = async (args) => {
     scriptSources: new Set()
   }
 
+  // Optional streaming hooks: onProgress receives one event per phase and
+  // onScreenshot receives viewport-sized webp frames as base64 strings while
+  // the page loads.
+  // Both are absent for the buffered JSON response and for the tests.
+  const onProgress = args.onProgress
+  const reportProgress = (phase, extra = {}) => {
+    if (onProgress !== undefined) {
+      onProgress({ phase, t: Date.now() - report.timestamp, ...extra })
+    }
+  }
+
   const templateProfile = templateProfilePathForArgs(args)
+  reportProgress('preparing-profile')
   // Only operate on a copy of the template profile
   const workingProfile = await fs.mkdtemp(path.join(os.tmpdir(), 'cookiecrumbler-profile-'))
 
@@ -125,10 +174,12 @@ export const checkPage = async (args) => {
   let wprSession
   let wprGoPorts
   if (args.location) {
+    reportProgress('starting-proxy')
     proxyUrl = await anonymizeProxy(proxyUrlWithAuth(args.location))
     console.log(`Started local proxy server: ${proxyUrl}`)
   } else if (wprGo !== undefined) {
     try {
+      reportProgress('starting-wpr')
       wprSession = new WprGoSession(wprGo)
       const { firstUrl } = await wprSession.prepare({ url })
       if (!url) {
@@ -149,32 +200,75 @@ export const checkPage = async (args) => {
       return report
     }
   }
-  const puppeteerArgs = await puppeteerConfigForArgs({
-    ...args,
-    pathForProfile: workingProfile,
-    proxyServer: proxyUrl,
-    wprGoPorts,
-    // Prevent mid-check Brave component downloads; setup must not set this.
-    invalidateComponentUpdater: true
-  })
-  const pptr = addExtra(vanillaPuppeteer)
-  const stealth = StealthPlugin()
-  stealth.enabledEvasions.delete('user-agent-override')
-  pptr.use(stealth)
-  const userAgentOverridePlugin = userAgentOverride({
-    ...(userAgent ? { userAgent } : {}),
-  })
-  pptr.use(userAgentOverridePlugin)
-
-  const browser = await Sentry.startSpan({ name: 'Launch Browser' }, () => {
-    return pptr.launch(puppeteerArgs)
-  })
-
-  const page = await browser.newPage()
-  // puppeteer-extra's async page hook can race with the first navigation.
-  await userAgentOverridePlugin.onPageCreated(page)
-
+  let browser
+  let page
+  // Teardown steps are guarded individually: a failing close must not skip
+  // the remaining ones (or the tmp/profile/proxy cleanup below)
+  const tryOrWarn = (operation, label) => operation().catch(error => console.warn(`${label} failed:`, error.message))
   try {
+    const puppeteerArgs = await puppeteerConfigForArgs({
+      ...args,
+      pathForProfile: workingProfile,
+      proxyServer: proxyUrl,
+      wprGoPorts,
+      // Prevent mid-check Brave component downloads; setup must not set this.
+      invalidateComponentUpdater: true
+    })
+    const pptr = addExtra(vanillaPuppeteer)
+    const stealth = StealthPlugin()
+    stealth.enabledEvasions.delete('user-agent-override')
+    pptr.use(stealth)
+    const userAgentOverridePlugin = userAgentOverride({
+      ...(userAgent ? { userAgent } : {}),
+    })
+    pptr.use(userAgentOverridePlugin)
+
+    browser = await Sentry.startSpan({ name: 'Launch Browser' }, () => {
+      return pptr.launch(puppeteerArgs)
+    })
+    reportProgress('browser-launched')
+
+    page = await browser.newPage()
+    // puppeteer-extra's async page hook can race with the first navigation.
+    await userAgentOverridePlugin.onPageCreated(page)
+
+    const onScreenshot = args.onScreenshot
+    const interimFrames = { count: 0, busy: false }
+    const captureInterimFrame = async () => {
+      const canCapture = onScreenshot !== undefined &&
+        includeScreenshot !== false &&
+        interimFrames.busy === false &&
+        interimFrames.count < MAX_INTERIM_FRAMES
+      if (!canCapture) {
+        return
+      }
+      interimFrames.busy = true
+      try {
+        // viewport-sized webp keeps every frame cheap to stream live
+        // puppeteer's base64 encoding avoids a Buffer dependency: on newer
+        // Node runtimes screenshot() returns a plain Uint8Array, whose
+        // toString('base64') would produce a comma-separated number list
+        const frame = await page.screenshot({ type: 'webp', quality: 75, optimizeForSpeed: true, encoding: 'base64' })
+        interimFrames.count += 1
+        onScreenshot(frame, { seq: interimFrames.count, t: Date.now() - report.timestamp })
+      } catch {
+        // captures racing a navigation can fail; interim frames are best-effort
+      } finally {
+        interimFrames.busy = false
+      }
+    }
+
+    // Paces interim captures across a settle window
+    const waitWithInterimFrames = async (ms) => {
+      let waited = 0
+      while (waited < ms) {
+        const slice = Math.min(INTERIM_FRAME_INTERVAL_MS, ms - waited)
+        await setTimeout(slice)
+        waited += slice
+        await captureInterimFrame()
+      }
+    }
+
     if (blockNonHttpRequests) {
       if (!url.startsWith('http://') && !url.startsWith('https://')) {
         throw new Error('Blocked non-HTTP(S) request')
@@ -214,25 +308,48 @@ export const checkPage = async (args) => {
       await page.setUserAgent(userAgent) // this will also override Sec-CH-UA
     }
 
+    reportProgress('navigating', { url })
     await Sentry.startSpan({ name: 'domcontentloaded' }, () => {
       return page.goto(url, { waitUntil: 'domcontentloaded' })
     })
+    reportProgress('page-loaded')
+    // attach the slow-check navigation wait before the interim capture: the
+    // capture is a slow round trip on a still-loading page, and a redirect
+    // completing while it runs would otherwise be missed, running
+    // waitForNavigation into its 30s timeout
+    const settleSlow = slowCheck
+      ? page.waitForNavigation({ waitUntil: ['load', 'networkidle2'], timeout: 30000 })
+      : undefined
+    // the rejection is handled at the await below; without this handler the
+    // wait could reject while the interim capture runs and be logged as an
+    // unhandled rejection in between
+    settleSlow?.catch(() => {})
+    await captureInterimFrame()
 
     const waitTimeMs = args.seconds * 1000
 
     if (slowCheck) {
       console.log('Performing slow check, waiting for network to settle.')
+      reportProgress('settling-network')
+      let networkSettled = true
       try {
-        await page.waitForNavigation({ waitUntil: ['load', 'networkidle2'], timeout: 30000 })
+        await settleSlow
         console.log('Network settled')
       } catch (error) {
+        networkSettled = false
         console.warn('Navigation timed out or failed:', error.message)
       }
-      await setTimeout(waitTimeMs) // wait longer for slow check
+      reportProgress('network-settled', { settled: networkSettled })
+      await captureInterimFrame()
+      // wait longer for slow check
+      reportProgress('waiting-settle')
+      await waitWithInterimFrames(waitTimeMs)
     }
 
-    await setTimeout(waitTimeMs)
+    reportProgress('waiting-settle')
+    await waitWithInterimFrames(waitTimeMs)
 
+    reportProgress('classifying')
     const randomToken = generateRandomToken()
     await page.exposeFunction(randomToken, (name, ...args) => inPageAPI[name](...args))
 
@@ -271,26 +388,8 @@ export const checkPage = async (args) => {
       }
 
       const l = await inPageResult.evaluate(r => r.cookieNotices.length)
-      const cookieNoticeDetected = l === 1
 
-      // Capture MHTML if requested
-      if (includeMhtml === 'always' || (includeMhtml === 'onDetection' && cookieNoticeDetected)) {
-        const session = await page.target().createCDPSession()
-        try {
-          // Limited to 256MB
-          // https://source.chromium.org/chromium/chromium/src/+/main:content/browser/devtools/devtools_http_handler.cc;l=97?q=kSendBufferSizeForDevTools&ss=chromium
-          const mhtmlData = await session.send('Page.captureSnapshot', { format: 'mhtml' })
-
-          if (mhtmlMode === 'optimized') {
-            // TODO: Implement optimization logic here
-            console.warn('MHTML optimization not yet implemented')
-          }
-
-          report.mhtml = mhtmlData.data
-        } finally {
-          await session.detach()
-        }
-      }
+      reportProgress('capturing-artifacts')
 
       report.url = page.url()
 
@@ -309,8 +408,9 @@ export const checkPage = async (args) => {
         if (boundingBox.height === 0 || boundingBox.width === 0) {
           // it won't work for a screenshot. Find another element to capture, somehow
         } else if (includeScreenshot && includeScreenshot !== 'fullPage') {
-          const screenshotB64 = await cookieNotice.innermostHideableElement.screenshot({ omitBackground: true, optimizeForSpeed: true, type: 'webp', encoding: 'base64' })
+          const { data: screenshotB64, type: screenshotType } = await takeScreenshot(page, cookieNotice.innermostHideableElement, { omitBackground: true, optimizeForSpeed: true })
           report.screenshot = screenshotB64
+          report.screenshotType = screenshotType
         }
         if (includeMarkup) {
           report.markup = String(await unified()
@@ -331,8 +431,9 @@ export const checkPage = async (args) => {
       // Add full page screenshot if explicitly requested or if no element was detected and screenshot is set to "always"
       if (['always', 'fullPage'].includes(includeScreenshot) && !report.screenshot) {
         // TODO: scroll to bottom to trigger lazy-loaded elements
-        const screenshotB64 = await page.screenshot({ fullPage: true, omitBackground: true, optimizeForSpeed: true, type: 'webp', encoding: 'base64' })
+        const { data: screenshotB64, type: screenshotType } = await takeScreenshot(page, page, { fullPage: true, omitBackground: true, optimizeForSpeed: true })
         report.screenshot = screenshotB64
+        report.screenshotType = screenshotType
       }
       report.scrollBlocked = ((await inPageResult.evaluate(r => r.scrollBlocked)) === true)
       report.unsupportedBrowser = (await inPageResult.evaluate(r => r.unsupportedBrowser)) ?? null
@@ -345,19 +446,20 @@ export const checkPage = async (args) => {
   } catch (err) {
     report.error = err.stack
   } finally {
-    await page.close()
-
-    await browser.close()
+    reportProgress('closing-browser')
+    if (page !== undefined) await tryOrWarn(() => page.close(), 'Page close')
+    if (browser !== undefined) await tryOrWarn(() => browser.close(), 'Browser close')
     if (args.location) {
-      await closeAnonymizedProxy(proxyUrl, true)
+      await tryOrWarn(() => closeAnonymizedProxy(proxyUrl, true), 'Proxy close')
       console.log('Proxy closed')
     }
 
-    await fs.rm(workingProfile, { recursive: true })
+    await tryOrWarn(() => fs.rm(workingProfile, { recursive: true, force: true }), 'Profile removal')
   }
 
   if (wprSession !== undefined) {
     try {
+      reportProgress('archiving-wpr')
       const archiveData = await wprSession.stop()
       if (archiveData !== undefined) {
         report.wpr = archiveData
@@ -373,93 +475,4 @@ export const checkPage = async (args) => {
   return report
 }
 
-export const prepareProfile = async (args) => {
-  const tmpProfile = await fs.mkdtemp(path.join(os.tmpdir(), 'cookiecrumbler-setup-profile-'))
-  const templateProfile = templateProfilePathForArgs(args)
-
-  if (existsSync(templateProfile)) {
-    // Template profile already exists; return early
-    console.log('profile directory already exists')
-    return
-  } else {
-    // Create template profile directory
-    await fs.mkdir(templateProfile)
-  }
-
-  await fetch('https://publicsuffix.org/list/public_suffix_list.dat')
-    .then(resp => resp.text())
-    .then(body => fs.writeFile(path.join(import.meta.dirname, '..', 'public_suffix_list.dat'), body))
-
-  console.log('Performing initial profile setup...')
-  const puppeteerArgs = await puppeteerConfigForArgs({ ...args, pathForProfile: tmpProfile })
-
-  const browser = await vanillaPuppeteer.launch(puppeteerArgs)
-
-  const page = await browser.newPage()
-  // Give the browser some time to register/download adblock components
-  console.log('Wait until all components are registered')
-  await checkAllComponentsRegistered(page)
-
-  console.log('Updating Brave components')
-  await page.goto('brave://components', { waitUntil: 'domcontentloaded' })
-  const buttons = await page.$$('.button-check-update')
-  for (const button of buttons) {
-    const buttonId = await page.evaluate(el => el.getAttribute('id'), button)
-    if (buttonId) {
-      console.log('Updating component:', buttonId)
-      await button.click()
-      await setTimeout(100) // Wait for 100ms between clicks
-    }
-  }
-
-  console.log('Waiting for components to update...')
-  await setTimeout(500)
-  await page.waitForFunction(() => {
-    const elements = document.querySelectorAll('span[id^="status-"]')
-    return Array.from(elements)
-      .map(el => el.innerText.trim())
-      .filter(text => text !== '')
-      .every(spanText => ['Component already up to date', 'Up-to-date', 'Component updated'].includes(spanText))
-  }, { timeout: 60000 })
-  console.log('Components updated')
-
-  await page.close()
-
-  await browser.close()
-
-  // Clean up stale Singleton Lock
-  await fs.rm(`${tmpProfile}/SingletonLock`, { force: true })
-  // Clean up crx cache
-  await fs.rm(`${tmpProfile}/component_crx_cache`, { force: true, recursive: true })
-
-  const adblockComponents = parseListCatalogComponentIds({ profileDir: tmpProfile })
-
-  for (const fileName of readdirSync(tmpProfile)) {
-    // check if valid component id and not in keeplist
-    if (isValidChromeComponentId({ id: fileName }) && !isKeeplistedComponentId({ id: fileName, additionalComponentList: adblockComponents })) {
-      console.log('patching component: ', fileName)
-      const extensionDir = path.join(tmpProfile, fileName)
-      const versionDir = getExtensionVersion(extensionDir)
-      const srcManifest = path.join(extensionDir, versionDir, 'manifest.json')
-      const destPath = path.join(templateProfile, fileName, '999.999')
-      replaceVersion({ fileName: srcManifest })
-      mkdirSync(destPath, { recursive: true })
-      if (fileName === 'gkboaolpopklhgplhaaiboijnklogmbc') {
-        // copy List Catalog files after modifying version
-        await fs.cp(path.join(extensionDir, versionDir), destPath, { recursive: true, mode: fsConstants.COPYFILE_FICLONE })
-      } else {
-        // only copy the manifest for all other components
-        await fs.cp(srcManifest, path.join(destPath, 'manifest.json'), { mode: fsConstants.COPYFILE_FICLONE })
-      }
-    } else {
-      // copy all other files in profile directory, as well as keeplisted components
-      await fs.cp(`${tmpProfile}/${fileName}`, `${templateProfile}/${fileName}`, { recursive: true, mode: fsConstants.COPYFILE_FICLONE })
-    }
-  }
-
-  const optionalDefaultComponents = getOptionalDefaultComponentIds({ profileDir: tmpProfile })
-  writeFileSync(path.join(import.meta.dirname, '..', 'adblock_lists.json'), JSON.stringify(optionalDefaultComponents, null, 2))
-
-  await fs.rm(tmpProfile, { recursive: true })
-  console.log('Done. Profile has been prepared for future use.')
-}
+export { prepareProfile } from './prepareProfile.mjs'

@@ -1,4 +1,4 @@
-import { templateProfilePathForArgs } from './setupUtil.mjs'
+import { templateProfilePathForArgs, ensureEmptyNtpSponsoredImagesComponent } from './setupUtil.mjs'
 
 export const VIEWPORT_PRESETS = {
   '1080p': { width: 1920, height: 1080 },
@@ -9,7 +9,12 @@ export const VIEWPORT_PRESETS = {
 const DEFAULT_DISABLED_FEATURES = [
   'BraveAdblockCookieListDefault',
   'BraveAdblockMobileNotificationsListDefault',
-  'AdblockDATCache'
+  'AdblockDATCache',
+  'HistoryEmbeddings',
+  'PreloadMediaEngagementData',
+  'OmniboxOnDeviceHeadProviderIncognito',
+  'OmniboxOnDeviceHeadProviderNonIncognito',
+  'QueryFilterComponent'
 ]
 
 export const REQUEST_DISABLE_FEATURES_ALLOWLIST = [
@@ -26,8 +31,7 @@ const WPR_DISABLED_FEATURES = [
 
 /**
  * Non-resolving URL used for check requests so the browser cannot fetch
- * component updates even when --allow-brave-component-update is set.
- * (.invalid is a reserved TLD that never resolves.)
+ * component updates. (.invalid is a reserved TLD that never resolves.)
  * Setup must keep default
  */
 export const INVALID_COMPONENT_UPDATER_URL = 'https://localhost.invalid/'
@@ -49,9 +53,7 @@ export const puppeteerConfigForArgs = async (args) => {
       '--disable-brave-update',
       '--no-sandbox',
       '--disable-setuid-sandbox',
-      '--disable-gpu',
-      '--allow-brave-component-update',
-      '--disable-component-update'
+      '--disable-gpu'
     ],
     executablePath: args.executablePath,
     ignoreDefaultArgs: [
@@ -61,7 +63,12 @@ export const puppeteerConfigForArgs = async (args) => {
   }
 
   // Check requests only: override the component updater so Brave cannot
-  // download updates. Setup must not set invalidateComponentUpdater.
+  // download updates at all.
+  // Do not use --disable-component-update for this: since Brave nightly
+  // 1.101.40 it also suppresses the initial registration of components,
+  // which breaks profile setup. The invalid URL alone reliably prevents
+  // any component download during check requests.
+  // Setup must not set invalidateComponentUpdater.
   if (args.invalidateComponentUpdater) {
     puppeteerArgs.args.push(`--component-updater=url-source=${INVALID_COMPONENT_UPDATER_URL}`)
   }
@@ -73,6 +80,11 @@ export const puppeteerConfigForArgs = async (args) => {
 
   const disabledFeatures = mergedDisableFeatures(args.disableFeatures, args.wprGoPorts !== undefined ? WPR_DISABLED_FEATURES : [])
   puppeteerArgs.args.push(`--disable-features=${disabledFeatures.join(',')}`)
+
+  // Point the NTP sponsored images component at an empty directory inside the
+  // profile so no sponsored campaigns load during runs.
+  const ntpSponsoredImagesComponentPath = await ensureEmptyNtpSponsoredImagesComponent({ profileDir: puppeteerArgs.userDataDir })
+  puppeteerArgs.args.push(`--ntp-sponsored-images-component-path=${ntpSponsoredImagesComponentPath}`)
 
   // If viewport preset is specified, set window size, and screen info
   if (args.viewport && VIEWPORT_PRESETS[args.viewport]) {

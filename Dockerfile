@@ -1,6 +1,6 @@
 # WprGo (WebPageReplay) builder stage
 # Pinned to a commit on the "cookiecrumbler" branch; bump this to invalidate the cache.
-FROM golang:1.27@sha256:2920bb124f1a2e12a1d39f0cab756ae0068441ee1da7655dec7f5e374944095b AS wpr-builder
+FROM golang:1.27@sha256:ec47ea3725fea0cc88f6de94919aef19f40f12fc1ec0e2d1b3426dbf15ecca04 AS wpr-builder
 
 # https://github.com/brave-experiments/webpagereplay (cookiecrumbler branch)
 ARG WPR_GO_COMMIT=e1c683f26a53fa7923e9987d0d35fcbe081b65c3
@@ -11,7 +11,7 @@ RUN git clone https://github.com/brave-experiments/webpagereplay.git /webpagerep
     CGO_ENABLED=0 go build -o /wpr ./src/wpr.go
 
 # Base application image
-FROM ghcr.io/pnpm/pnpm:12.15.0@sha256:d6148daf3ad2af8fa4ecd1aa06db73da32b2e37f63088987eea2fb375ee7f320
+FROM ghcr.io/pnpm/pnpm:12.21.0@sha256:168feba88e6a1684c99a62cbf4fe361d4e683e2a6c920d3b0acde7e15a28b62d
 
 ARG FULL_CACHEBUST=0
 
@@ -21,12 +21,8 @@ ARG PACKAGE_NAME=${PACKAGE_NAME%%-release} # strip -release from the package nam
 ENV BRAVE_BINARY=/usr/bin/${PACKAGE_NAME}
 
 ARG DEBIAN_FRONTEND=noninteractive
-ENV DEBIAN_FRONTEND=$DEBIAN_FRONTEND
-ENV AWS_LWA_PORT=3000
 
-RUN apt-get -qq update && \
-    apt-get -qy install curl && \
-    curl -fsSLo /usr/share/keyrings/${PACKAGE_NAME}-archive-keyring.gpg https://brave-browser-apt-${CHANNEL}.s3.brave.com/${PACKAGE_NAME}-archive-keyring.gpg && \
+RUN curl -fsSLo /usr/share/keyrings/${PACKAGE_NAME}-archive-keyring.gpg https://brave-browser-apt-${CHANNEL}.s3.brave.com/${PACKAGE_NAME}-archive-keyring.gpg && \
     echo "deb [signed-by=/usr/share/keyrings/${PACKAGE_NAME}-archive-keyring.gpg] https://brave-browser-apt-${CHANNEL}.s3.brave.com/ stable main" | tee /etc/apt/sources.list.d/brave-browser-${CHANNEL}.list && \
     apt-get -qq update && \
     apt-get -qy install ${PACKAGE_NAME} fonts-dejavu-core fonts-noto-color-emoji patch --no-install-recommends && \
@@ -35,13 +31,19 @@ RUN apt-get -qq update && \
 ARG GIT_COMMIT
 ENV GIT_COMMIT=${GIT_COMMIT}
 
-# This image ships pnpm but not Node; install Node 24 onto PATH.
-RUN pnpm runtime set node 24 -g -y
-
+# The pnpm base image leaves /pnpm world-writable (chmod -R a+rwX in its
+# install script), so everything it contains can be created as the unprivileged
+# user directly. Creating the user first and installing Node afterwards avoids
+# a `chown -R /pnpm`, which would otherwise re-emit the entire Node runtime
+# (~365 MB) into a new layer just to change file ownership.
 RUN useradd --create-home --uid 1000 --shell /bin/bash node && \
-    chown -R node:node /app /pnpm
+    chown node:node /app
 
 USER node
+
+# This image ships pnpm but not Node. Node is installed implicitly by
+# `pnpm install` from `devEngines.runtime` in package.json (onFail: download),
+# which is the single source of truth for the Node version.
 WORKDIR /app
 COPY --chown=node:node package.json pnpm-lock.yaml pnpm-workspace.yaml /app
 RUN pnpm install --frozen-lockfile

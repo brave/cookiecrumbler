@@ -28,6 +28,11 @@ import { generateRandomToken } from './util.mjs'
 import { cookieNoticeClassifier, browserNoticeClassifier } from './text-classification.mjs'
 import { WprGoSession, WprGoError } from './wpr.mjs'
 
+// Upper bound for screenshots streamed while the page loads and settles;
+// keeps the streamed transfer a small multiple of the final report size.
+const MAX_INTERIM_FRAMES = 8
+const INTERIM_FRAME_INTERVAL_MS = 1000
+
 const openai = new OpenAI({
   baseURL: process.env.OPENAI_BASE_URL || 'http://localhost:11434/v1',
   apiKey: process.env.OPENAI_API_KEY || 'ollama'
@@ -113,8 +118,6 @@ export const checkPage = async (args) => {
   const slowCheck = args.slowCheck ?? false
   const blockNonHttpRequests = args.blockNonHttpRequests ?? true
   const deviceName = args.device
-  const mhtmlMode = args.mhtmlMode ?? 'full'
-  const includeMhtml = args.includeMhtml ?? 'never'
   const wprGo = args.wprGo
   const userAgent = args.userAgent
 
@@ -124,7 +127,19 @@ export const checkPage = async (args) => {
     scriptSources: new Set()
   }
 
+  // Optional streaming hooks: onProgress receives one event per phase and
+  // onScreenshot receives viewport-sized webp frames as base64 strings while
+  // the page loads.
+  // Both are absent for the buffered JSON response and for the tests.
+  const onProgress = args.onProgress
+  const reportProgress = (phase, extra = {}) => {
+    if (onProgress !== undefined) {
+      onProgress({ phase, t: Date.now() - report.timestamp, ...extra })
+    }
+  }
+
   const templateProfile = templateProfilePathForArgs(args)
+  reportProgress('preparing-profile')
   // Only operate on a copy of the template profile
   const workingProfile = await fs.mkdtemp(path.join(os.tmpdir(), 'cookiecrumbler-profile-'))
 
@@ -159,10 +174,12 @@ export const checkPage = async (args) => {
   let wprSession
   let wprGoPorts
   if (args.location) {
+    reportProgress('starting-proxy')
     proxyUrl = await anonymizeProxy(proxyUrlWithAuth(args.location))
     console.log(`Started local proxy server: ${proxyUrl}`)
   } else if (wprGo !== undefined) {
     try {
+      reportProgress('starting-wpr')
       wprSession = new WprGoSession(wprGo)
       const { firstUrl } = await wprSession.prepare({ url })
       if (!url) {
@@ -209,10 +226,48 @@ export const checkPage = async (args) => {
     browser = await Sentry.startSpan({ name: 'Launch Browser' }, () => {
       return pptr.launch(puppeteerArgs)
     })
+    reportProgress('browser-launched')
 
     page = await browser.newPage()
     // puppeteer-extra's async page hook can race with the first navigation.
     await userAgentOverridePlugin.onPageCreated(page)
+
+    const onScreenshot = args.onScreenshot
+    const interimFrames = { count: 0, busy: false }
+    const captureInterimFrame = async () => {
+      const canCapture = onScreenshot !== undefined &&
+        includeScreenshot !== false &&
+        interimFrames.busy === false &&
+        interimFrames.count < MAX_INTERIM_FRAMES
+      if (!canCapture) {
+        return
+      }
+      interimFrames.busy = true
+      try {
+        // viewport-sized webp keeps every frame cheap to stream live
+        // puppeteer's base64 encoding avoids a Buffer dependency: on newer
+        // Node runtimes screenshot() returns a plain Uint8Array, whose
+        // toString('base64') would produce a comma-separated number list
+        const frame = await page.screenshot({ type: 'webp', quality: 75, optimizeForSpeed: true, encoding: 'base64' })
+        interimFrames.count += 1
+        onScreenshot(frame, { seq: interimFrames.count, t: Date.now() - report.timestamp })
+      } catch {
+        // captures racing a navigation can fail; interim frames are best-effort
+      } finally {
+        interimFrames.busy = false
+      }
+    }
+
+    // Paces interim captures across a settle window
+    const waitWithInterimFrames = async (ms) => {
+      let waited = 0
+      while (waited < ms) {
+        const slice = Math.min(INTERIM_FRAME_INTERVAL_MS, ms - waited)
+        await setTimeout(slice)
+        waited += slice
+        await captureInterimFrame()
+      }
+    }
 
     if (blockNonHttpRequests) {
       if (!url.startsWith('http://') && !url.startsWith('https://')) {
@@ -253,25 +308,48 @@ export const checkPage = async (args) => {
       await page.setUserAgent(userAgent) // this will also override Sec-CH-UA
     }
 
+    reportProgress('navigating', { url })
     await Sentry.startSpan({ name: 'domcontentloaded' }, () => {
       return page.goto(url, { waitUntil: 'domcontentloaded' })
     })
+    reportProgress('page-loaded')
+    // attach the slow-check navigation wait before the interim capture: the
+    // capture is a slow round trip on a still-loading page, and a redirect
+    // completing while it runs would otherwise be missed, running
+    // waitForNavigation into its 30s timeout
+    const settleSlow = slowCheck
+      ? page.waitForNavigation({ waitUntil: ['load', 'networkidle2'], timeout: 30000 })
+      : undefined
+    // the rejection is handled at the await below; without this handler the
+    // wait could reject while the interim capture runs and be logged as an
+    // unhandled rejection in between
+    settleSlow?.catch(() => {})
+    await captureInterimFrame()
 
     const waitTimeMs = args.seconds * 1000
 
     if (slowCheck) {
       console.log('Performing slow check, waiting for network to settle.')
+      reportProgress('settling-network')
+      let networkSettled = true
       try {
-        await page.waitForNavigation({ waitUntil: ['load', 'networkidle2'], timeout: 30000 })
+        await settleSlow
         console.log('Network settled')
       } catch (error) {
+        networkSettled = false
         console.warn('Navigation timed out or failed:', error.message)
       }
-      await setTimeout(waitTimeMs) // wait longer for slow check
+      reportProgress('network-settled', { settled: networkSettled })
+      await captureInterimFrame()
+      // wait longer for slow check
+      reportProgress('waiting-settle')
+      await waitWithInterimFrames(waitTimeMs)
     }
 
-    await setTimeout(waitTimeMs)
+    reportProgress('waiting-settle')
+    await waitWithInterimFrames(waitTimeMs)
 
+    reportProgress('classifying')
     const randomToken = generateRandomToken()
     await page.exposeFunction(randomToken, (name, ...args) => inPageAPI[name](...args))
 
@@ -310,26 +388,8 @@ export const checkPage = async (args) => {
       }
 
       const l = await inPageResult.evaluate(r => r.cookieNotices.length)
-      const cookieNoticeDetected = l === 1
 
-      // Capture MHTML if requested
-      if (includeMhtml === 'always' || (includeMhtml === 'onDetection' && cookieNoticeDetected)) {
-        const session = await page.target().createCDPSession()
-        try {
-          // Limited to 256MB
-          // https://source.chromium.org/chromium/chromium/src/+/main:content/browser/devtools/devtools_http_handler.cc;l=97?q=kSendBufferSizeForDevTools&ss=chromium
-          const mhtmlData = await session.send('Page.captureSnapshot', { format: 'mhtml' })
-
-          if (mhtmlMode === 'optimized') {
-            // TODO: Implement optimization logic here
-            console.warn('MHTML optimization not yet implemented')
-          }
-
-          report.mhtml = mhtmlData.data
-        } finally {
-          await session.detach()
-        }
-      }
+      reportProgress('capturing-artifacts')
 
       report.url = page.url()
 
@@ -386,6 +446,7 @@ export const checkPage = async (args) => {
   } catch (err) {
     report.error = err.stack
   } finally {
+    reportProgress('closing-browser')
     if (page !== undefined) await tryOrWarn(() => page.close(), 'Page close')
     if (browser !== undefined) await tryOrWarn(() => browser.close(), 'Browser close')
     if (args.location) {
@@ -398,6 +459,7 @@ export const checkPage = async (args) => {
 
   if (wprSession !== undefined) {
     try {
+      reportProgress('archiving-wpr')
       const archiveData = await wprSession.stop()
       if (archiveData !== undefined) {
         report.wpr = archiveData

@@ -119,6 +119,9 @@ img:hover {
   font-style: italic;
   color: #888;
 }
+.report-location {
+  color: #888;
+}
 #spinner {
   font-size: 3em;
   display: none;
@@ -131,6 +134,42 @@ img:hover {
 #spinner.active {
   display: block;
   animation: spin 1s linear infinite;
+}
+#progress {
+  display: none;
+  margin: 1.5em 0;
+  max-width: min(60em, 100%);
+}
+#progress.active {
+  display: block;
+}
+#progress-track {
+  max-width: 40em;
+  height: 0.6em;
+  background: #ddd;
+  border-radius: 0.3em;
+  overflow: hidden;
+}
+#progress-bar {
+  height: 100%;
+  width: 0%;
+  background: #bdf;
+  border-radius: 0.3em;
+  transition: width 0.4s;
+}
+#progress-label {
+  font-size: 0.75em;
+  color: #666;
+  margin-top: 0.3em;
+}
+#progress-frame {
+  /* natural resolution up to the container: no upscale blur on small
+     viewports, and large-viewport checks use the space a wide screen offers */
+  max-width: 100%;
+  height: auto;
+  margin-top: 0.75em;
+  border-radius: 0.3em;
+  box-shadow: 0 0 0 1px #ddd;
 }
 @keyframes spin {
   100% {
@@ -185,10 +224,10 @@ details pre {
   display: block;
 }
 
-.mhtml-link, .wpr-link {
+.wpr-link {
   font-size: 0.5em;
 }
-.mhtml-link a, .wpr-link a {
+.wpr-link a {
   color: #8ad;
 }
 
@@ -252,21 +291,6 @@ details pre {
 
       <fieldset id="dev_menu">
         <legend>Dev menu</legend>
-        <label>MHTML mode:
-          <select id="mhtml-mode-select" name="mhtml-mode">
-            <option value="full">Full</option>
-            <option value="optimized">Optimized</option>
-          </select>
-        </label>
-        <br>
-        <label>Include MHTML:
-          <select id="mhtml-include-select" name="mhtml-include">
-            <option value="never">Never</option>
-            <option value="always">Always</option>
-            <option value="onDetection">On Detection</option>
-          </select>
-        </label>
-        <br>
         <label><input type="checkbox" id="wpr-record" name="wpr-record">Record with WprGo (WebPageReplay)<span id="wpr-record-warning" class="warning-icon" hidden title="Enabled adblock lists can apply network filters that prevent some assets from being fetched. The recording will be missing those assets, which may affect regression tests.">!</span></label>
         <br>
         <label>Replay archive:
@@ -286,6 +310,11 @@ details pre {
       </div>
     </form>
     <div id="spinner">🍪</div>
+    <div id="progress">
+      <div id="progress-track"><div id="progress-bar"></div></div>
+      <div id="progress-label"></div>
+      <img id="progress-frame" alt="Latest page render" hidden>
+    </div>
     <div id="reportlist"></div>
     <footer>
       <a href="https://github.com/brave/cookiecrumbler">Source code</a>
@@ -490,6 +519,188 @@ details pre {
         return { action: 'replay', data: btoa(binary) };
       }
 
+      // BEGIN SSE stream parser (sliced out verbatim by test/streamParser.test.mjs)
+
+      /**
+       * Incremental parser for an SSE stream over a fetch body. Event blocks
+       * (up to their \n\n terminator) accumulate as chunk arrays and are
+       * joined once, so a multi-megabyte event (the base64 report) costs one
+       * linear pass instead of quadratic recopying. Yields raw blocks,
+       * including `:` comment blocks (heartbeats).
+       */
+      async function* sseBlocks (bodyStream) {
+        const reader = bodyStream.getReader()
+        const decoder = new TextDecoder()
+        let pending = []
+        // at most one '\n' is carried between reads: a \n\n terminator can
+        // only split across a chunk edge if the earlier chunk ends with '\n'
+        let carry = ''
+        let eof = false
+        while (!eof) {
+          const { value, done } = await reader.read()
+          if (done) {
+            eof = true
+          }
+          let text = carry + (value === undefined ? '' : decoder.decode(value, { stream: true }))
+          if (eof) {
+            text += decoder.decode()
+          }
+          carry = ''
+          let start = 0
+          while (true) {
+            const end = text.indexOf('\n\n', start)
+            if (end === -1) {
+              break
+            }
+            pending.push(text.slice(start, end))
+            const block = pending.join('')
+            pending = []
+            if (block.trim() !== '') {
+              yield block
+            }
+            start = end + 2
+          }
+          const rest = text.slice(start)
+          if (eof) {
+            pending.push(rest)
+            const block = pending.join('')
+            if (block.trim() !== '') {
+              yield block
+            }
+            return
+          }
+          if (rest.endsWith('\n')) {
+            carry = '\n'
+            pending.push(rest.slice(0, -1))
+          } else {
+            pending.push(rest)
+          }
+        }
+      }
+
+      /**
+       * Parses one SSE block into { event, data }: `event:` selects the named
+       * event (default "message"), `data:` lines join with \n, and `:` comment
+       * lines (heartbeats) are ignored.
+       */
+      const parseSseBlock = (block) => {
+        let event = 'message'
+        const data = []
+        for (const line of block.split('\n')) {
+          if (line === '' || line.startsWith(':')) {
+            continue
+          }
+          const separator = line.indexOf(':')
+          if (separator === -1) {
+            continue
+          }
+          const field = line.slice(0, separator)
+          let value = line.slice(separator + 1)
+          if (value.startsWith(' ')) {
+            value = value.slice(1)
+          }
+          if (field === 'event') {
+            event = value
+          } else if (field === 'data') {
+            data.push(value)
+          }
+        }
+        return { event, data: data.join('\n') }
+      }
+      // END SSE stream parser
+
+      const PROGRESS_WEIGHTS = {
+        queued: 3,
+        'preparing-profile': 6,
+        'starting-proxy': 10,
+        'starting-wpr': 10,
+        'launching-browser': 18,
+        'browser-launched': 22,
+        navigating: 28,
+        'page-loaded': 48,
+        'settling-network': 58,
+        'network-settled': 63,
+        'waiting-settle': 70,
+        classifying: 85,
+        'capturing-artifacts': 95,
+        'archiving-wpr': 97,
+        'closing-browser': 99
+      }
+      const progressArea = document.getElementById('progress')
+      const progressBar = document.getElementById('progress-bar')
+      const progressLabel = document.getElementById('progress-label')
+      const progressFrame = document.getElementById('progress-frame')
+      let progressPercent = 0
+
+      const resetProgress = () => {
+        progressPercent = 0
+        progressBar.style.width = '0%'
+        progressLabel.textContent = ''
+        progressFrame.hidden = true
+        progressFrame.src = ''
+      }
+      const showProgress = (phase) => {
+        const weight = PROGRESS_WEIGHTS[phase]
+        if (weight !== undefined && weight > progressPercent) {
+          progressPercent = weight
+          progressBar.style.width = `${weight}%`
+        }
+        progressLabel.textContent = phase.replaceAll('-', ' ')
+      }
+
+      // timestamps make event pacing comparable against the server-reported
+      // t offsets in progress payloads
+      const streamLog = (message, ...args) => console.log(`[stream ${new Date().toISOString()}] ${message}`, ...args)
+      const streamDebug = (message, ...args) => console.debug(`[stream ${new Date().toISOString()}] ${message}`, ...args)
+      const streamWarn = (message, ...args) => console.warn(`[stream ${new Date().toISOString()}] ${message}`, ...args)
+
+      /**
+       * Consumes the streamed SSE check response and resolves to the final
+       * report. Interim screenshots arrive as base64 data URLs and replace
+       * the thumbnail image; the final report is byte-identical to the
+       * buffered JSON response, so its screenshot renders through the
+       * legacy path.
+       */
+      async function consumeStreamedReport (resp, requestUrl) {
+        const contentType = resp.headers.get('content-type') ?? ''
+        if (!contentType.includes('text/event-stream')) {
+          throw new Error(`unexpected check response content-type: ${contentType}`)
+        }
+        streamLog('response', {
+          status: resp.status,
+          contentType,
+          contentEncoding: resp.headers.get('content-encoding')
+        })
+        let report = null
+        let eventIndex = 0
+        for await (const block of sseBlocks(resp.body)) {
+          const { event, data } = parseSseBlock(block)
+          if (data === '') {
+            streamDebug(`event ${eventIndex}: ${event} (no data)`)
+            continue
+          }
+          const payload = JSON.parse(data)
+          streamLog(`event ${eventIndex}: ${event}`, payload)
+          if (event === 'progress') {
+            showProgress(payload.phase)
+          } else if (event === 'screenshot') {
+            // data URLs need no object-URL bookkeeping
+            progressFrame.src = `data:image/webp;base64,${payload.data}`
+            progressFrame.hidden = false
+          } else if (event === 'error') {
+            report = { error: payload.error, url: requestUrl, timestamp: Date.now() }
+          } else if (event === 'report') {
+            report = payload
+          }
+          eventIndex += 1
+        }
+        streamLog(`stream ended after ${eventIndex} events; report=${report !== null ? 'received' : 'MISSING'}`)
+        if (report === null) {
+          throw new Error('stream ended without a report event')
+        }
+        return report
+      }
+
       function createReportCard(report) {
         const card = document.createElement('div');
         card.classList.add('report-card');
@@ -500,22 +711,6 @@ details pre {
         const code = document.createElement('code');
         code.textContent = report.url;
         h2.appendChild(code);
-
-        if (report.mhtml) {
-          const mhtmlLink = document.createElement('a');
-          mhtmlLink.textContent = '[mhtml]';
-          const blob = new Blob([report.mhtml], { type: 'application/x-mimearchive' });
-          const url = window.URL.createObjectURL(blob);
-          mhtmlLink.href = url;
-          const date = new Date(report.timestamp);
-          const dateStr = date.toISOString().slice(0,10);
-          const timeStr = date.toTimeString().slice(0,8);
-          mhtmlLink.download = `${new URL(report.url).hostname}_${dateStr}_${timeStr}.mhtml`;
-          const mhtmlSpan = document.createElement('span');
-          mhtmlSpan.appendChild(mhtmlLink);
-          mhtmlSpan.classList.add('mhtml-link');
-          h2.appendChild(mhtmlSpan);
-        }
         
         if (report.wpr) {
           // report.wpr is base64-encoded; decode it into a Blob for the download link
@@ -555,6 +750,14 @@ details pre {
         datestring.classList.add('datestring');
         datestring.textContent = new Date(report.timestamp).toString();
         card.appendChild(datestring);
+
+        // Only set when the check was run through a proxy from the configured list
+        if (report.location) {
+          const p = document.createElement('p');
+          p.classList.add('report-location');
+          p.textContent = `Location: ${report.location}`;
+          card.appendChild(p);
+        }
 
         if (report.error !== undefined) {
           const p = document.createElement('p');
@@ -760,30 +963,58 @@ details pre {
         const disableFeatures = Array.from(
           document.querySelectorAll('#disable-features-list input[type="checkbox"]:checked')
         ).map(checkbox => checkbox.value);
-        const newCard = await fetch('/check', {
+        const requestBody = JSON.stringify({
+          url,
+          adblockLists: adblockLists,
+          location: locationSelector.value,
+          screenshot: document.getElementById('full_page_screenshot').checked ? "fullPage" : true,
+          slowCheck: document.getElementById('slow_check').checked,
+          device: document.getElementById('devices-select').value,
+          viewport: document.getElementById('viewport-select').value,
+          userAgent: document.getElementById('user-agent-input')?.value,
+          disableFeatures,
+          wprGo
+        })
+        const newCard = await fetch('/check/stream', {
           method: 'POST',
           cache: 'no-cache',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            url,
-            adblockLists: adblockLists,
-            location: locationSelector.value,
-            screenshot: document.getElementById('full_page_screenshot').checked ? "fullPage" : true,
-            slowCheck: document.getElementById('slow_check').checked,
-            device: document.getElementById('devices-select').value,
-            mhtmlMode: document.getElementById('mhtml-mode-select')?.value || 'full',
-            includeMhtml: document.getElementById('mhtml-include-select')?.value || 'never',
-            viewport: document.getElementById('viewport-select').value,
-            userAgent: document.getElementById('user-agent-input')?.value,
-            disableFeatures,
-            wprGo
-          }),
+          headers: { 'Content-Type': 'application/json' },
+          body: requestBody,
         })
-          .then(resp => resp.json())
+          .then(async resp => {
+            const contentType = resp.headers.get('content-type') ?? '';
+            streamLog('check response:', resp.status, contentType, 'encoding:', resp.headers.get('content-encoding'));
+            if (!contentType.includes('text/event-stream') || !resp.body) {
+              // only the stream endpoint is expected; anything else (old
+              // server, proxy misroute) surfaces as an error card instead of
+              // paying a second upload
+              const text = await resp.text();
+              try {
+                return JSON.parse(text);
+              } catch {
+                // an error report instead of a thrown Error: Firefox and
+                // Safari exclude the message from error.stack, so a thrown
+                // status would never show in the card
+                return {
+                  error: `Check request failed with HTTP ${resp.status}${text ? `: ${text.slice(0, 500)}` : ''}`,
+                  url,
+                  timestamp: Date.now()
+                };
+              }
+            }
+            // streaming server: live progress and interim screenshots
+            spinner.classList.remove('active');
+            progressArea.classList.add('active');
+            return consumeStreamedReport(resp, url);
+          })
           .then(report => createReportCard(report, url))
-          .catch(error => createReportCard({ error, url, timestamp: new Date() }));
+          .catch(error => {
+            // Firefox and Safari keep the message out of error.stack; build a
+            // display string that always contains it
+            const stack = error?.stack;
+            const display = stack?.includes(String(error)) ? stack : [String(error), stack].filter(Boolean).join('\n');
+            return createReportCard({ error: display, url, timestamp: new Date() });
+          });
 
         if (reportList.children.length > 0) {
           reportList.insertBefore(newCard, reportList.children[0]);
@@ -799,6 +1030,8 @@ details pre {
         }
         executeButton.disabled = false;
         spinner.classList.remove('active');
+        progressArea.classList.remove('active');
+        resetProgress();
       };
     </script>
   </body>

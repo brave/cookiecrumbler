@@ -270,6 +270,12 @@ router.get('/options.json', async (ctx) => {
 // Returns { status, body } for the first failed constraint, or null when the
 // request is well-formed.
 const validateCheckRequest = (body) => {
+  // Unknown fields (e.g. the pre-rename wprGo name) are rejected instead of
+  // being silently dropped: buildCheckArgs only copies the allowlist, so an
+  // ignored field would change what the request does without any signal
+  if (Object.keys(body).some(field => !CHECK_API_FIELDS.includes(field))) {
+    return { status: 400, body: { error: 'Bad Request: unknown field' } }
+  }
   const {
     device,
     viewport,

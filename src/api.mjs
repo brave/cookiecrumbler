@@ -19,11 +19,12 @@ import { Semaphore, withTimeout } from 'async-mutex'
 import { checkPage } from './lib.mjs'
 import { getFilteredKnownDevices } from './setupUtil.mjs'
 import { isValidHttpUrl } from './util.mjs'
+import { MAX_ARCHIVE_BYTES } from './netlogConfig.mjs'
 import { VIEWPORT_PRESETS, REQUEST_DISABLE_FEATURES_ALLOWLIST } from './puppeteer.mjs'
 
 // Calculate default max concurrency based on available memory
 const totalMemoryMB = os.totalmem() / (1024 * 1024)
-const DEFAULT_MAX_CONCURRENCY = Math.floor(totalMemoryMB / 256)
+const DEFAULT_MAX_CONCURRENCY = Math.floor(totalMemoryMB / 512)
 
 const maxConcurrency = parseInt(process.env.MAX_CONCURRENCY) || DEFAULT_MAX_CONCURRENCY
 const maxConcurrencyWaitMs = parseInt(process.env.MAX_CONCURRENCY_WAIT_MS) || 2000
@@ -47,7 +48,7 @@ console.log(`Port: ${port}`)
 
 const app = new Koa()
 // Raised json limit: WprGo replay archives are uploaded base64-encoded in the JSON body
-app.use(bodyParser({ jsonLimit: '200mb' }))
+app.use(bodyParser({ jsonLimit: Math.ceil(MAX_ARCHIVE_BYTES * 1.3) }))
 // Z_SYNC_FLUSH flushes the compressor on every write, so streamed bodies
 // arrive incrementally instead of buffering until the stream ends.
 // threshold 0 keeps even tiny bodies compressed; brotli stays off (slower

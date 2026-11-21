@@ -115,7 +115,10 @@ export const classifyCapture = ({ adblockLists, additionalFilterRules, optionalL
       return false
     }
     const entry = listCatalog.find(item => item.list_text_component.component_id === id)
-    return Boolean(value) !== Boolean(entry?.default_enabled)
+    // patchListCatalog ignores ids absent from the catalog, so an unknown
+    // id leaves the default configuration untouched and cannot deviate
+    if (entry === undefined) return false
+    return Boolean(value) !== Boolean(entry.default_enabled)
   })
   if (deviatesOutsideOptionalSet) {
     return 'custom'

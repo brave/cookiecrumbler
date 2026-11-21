@@ -242,6 +242,21 @@ describe('classifyCapture', () => {
       throw new Error('expected default')
     }
   })
+
+  it('ignores unknown list ids that the catalog patcher skips', () => {
+    // patchListCatalog only applies ids present in the catalog, so a stale
+    // or unknown id must not force the custom bucket
+    for (const adblockLists of [
+      { staleListId: true },
+      { staleListId: false, listA: true, listB: true },
+      { staleListId: true, listA: false, listB: false }
+    ]) {
+      const expected = adblockLists.listA === false && adblockLists.listB === false ? 'full' : 'default'
+      if (classifyCapture({ adblockLists, optionalListIds, listCatalog }) !== expected) {
+        throw new Error(`expected ${expected} for ${JSON.stringify(adblockLists)}`)
+      }
+    }
+  })
 })
 
 describe('wpr.archive option helpers', () => {

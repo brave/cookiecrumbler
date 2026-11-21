@@ -267,9 +267,21 @@ export const prepareProfile = async (args) => {
     await fs.mkdir(templateProfile)
   }
 
+  // Atomic replacement: the PSL is read by other processes while tests run
+  // concurrently, so a truncating in-place write could be observed mid-read
+  const pslPath = path.join(import.meta.dirname, '..', 'public_suffix_list.dat')
+  const pslTmpPath = `${pslPath}.prepareProfile-${process.pid}`
   await fetch('https://publicsuffix.org/list/public_suffix_list.dat')
     .then(resp => resp.text())
-    .then(body => fs.writeFile(path.join(import.meta.dirname, '..', 'public_suffix_list.dat'), body))
+    .then(async body => {
+      try {
+        await fs.writeFile(pslTmpPath, body)
+        await fs.rename(pslTmpPath, pslPath)
+      } catch (error) {
+        await fs.rm(pslTmpPath, { force: true }).catch(() => {})
+        throw error
+      }
+    })
 
   console.log('Performing initial profile setup...')
   // Use the same flags as the runtime flow (puppeteerConfigForArgs), except

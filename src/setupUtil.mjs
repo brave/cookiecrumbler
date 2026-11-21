@@ -88,6 +88,51 @@ export const isKeeplistedComponentId = ({ id, additionalComponentList }) => {
   return allowlist.includes(id)
 }
 
+// The optional filter lists exposed to clients: entries the template profile
+// ships default-enabled, minus the hidden default-filters component they
+// hang off (see getOptionalDefaultComponentIds, also used to generate
+// adblock_lists.json). Only this set decides the 'full'/'default' buckets —
+// but it is NOT the full set of client-toggleable lists: patchListCatalog
+// applies any catalog id a request carries, so an explicit deviation on any
+// other entry (disabling the default filter lists, enabling a regional
+// list, ...) must force the honest 'custom' bucket. The precise
+// per-request configuration is recorded in the archive metadata regardless.
+
+/**
+ * Buckets a record capture by its filter-list configuration for the S3
+ * archive key: 'full' (every optional list disabled, the replay-safe
+ * baseline), 'default' (all optional lists at their default-enabled state)
+ * or 'custom' (anything else, including captures with additional filter
+ * rules and any request change to non-optional catalog entries).
+ */
+export const classifyCapture = ({ adblockLists, additionalFilterRules, optionalListIds, listCatalog = [] }) => {
+  if (additionalFilterRules?.length) {
+    return 'custom'
+  }
+  const lists = adblockLists ?? {}
+  const deviatesOutsideOptionalSet = Object.entries(lists).some(([id, value]) => {
+    if (optionalListIds.includes(id)) {
+      return false
+    }
+    const entry = listCatalog.find(item => item.list_text_component.component_id === id)
+    // patchListCatalog ignores ids absent from the catalog, so an unknown
+    // id leaves the default configuration untouched and cannot deviate
+    if (entry === undefined) return false
+    return Boolean(value) !== Boolean(entry.default_enabled)
+  })
+  if (deviatesOutsideOptionalSet) {
+    return 'custom'
+  }
+  const states = optionalListIds.map(id => (id in lists ? Boolean(lists[id]) : true))
+  if (states.every(state => state)) {
+    return 'default'
+  }
+  if (states.every(state => !state)) {
+    return 'full'
+  }
+  return 'custom'
+}
+
 const patchListCatalog = (catalogPath, adblockLists) => {
   const listCatalog = JSON.parse(readFileSync(catalogPath, 'utf8'))
 

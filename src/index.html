@@ -293,8 +293,10 @@ details pre {
         <legend>Dev menu</legend>
         <label><input type="checkbox" id="wpr-record" name="wpr-record">Record WebPageReplay archive<span id="wpr-record-warning" class="warning-icon" hidden title="Enabled adblock lists can apply network filters that prevent some assets from being fetched. The recording will be missing those assets, which may affect regression tests.">!</span></label>
         <br>
+        <label><input type="checkbox" id="wpr-s3-store" name="wpr-s3-store">Store archive in S3</label>
+        <br>
         <label>Replay archive:
-          <input type="file" id="wpr-replay-file" name="wpr-replay-file" accept=".wprgo,application/gzip">
+          <input type="file" id="wpr-replay-file" name="wpr-replay-file" accept=".wpr,.wprgo,application/gzip">
         </label>
         <br>
         <label>User Agent:
@@ -471,7 +473,17 @@ details pre {
       const reportList = document.getElementById('reportlist');
       const form = document.getElementById('controls');
       const wprRecordCheckbox = document.getElementById('wpr-record');
+      const wprS3StoreCheckbox = document.getElementById('wpr-s3-store');
       const wprReplayFileInput = document.getElementById('wpr-replay-file');
+
+      // S3 storage only applies to record captures
+      const updateWprS3StoreEnabled = () => {
+        wprS3StoreCheckbox.disabled = !wprRecordCheckbox.checked;
+        if (wprS3StoreCheckbox.disabled) {
+          wprS3StoreCheckbox.checked = false;
+        }
+      };
+      updateWprS3StoreEnabled();
 
       // Record and replay are mutually exclusive; replay makes the URL optional
       wprReplayFileInput.addEventListener('change', () => {
@@ -481,6 +493,7 @@ details pre {
         }
         urlInput.required = !hasFile;
         updateWprRecordWarning();
+        updateWprS3StoreEnabled();
       });
       wprRecordCheckbox.addEventListener('change', () => {
         if (wprRecordCheckbox.checked) {
@@ -488,6 +501,7 @@ details pre {
           urlInput.required = true;
         }
         updateWprRecordWarning();
+        updateWprS3StoreEnabled();
       });
       // Warn when recording while adblock lists are enabled: their network
       // filters may prevent assets from being fetched, affecting the recording
@@ -501,7 +515,7 @@ details pre {
       document.getElementById('adblock-lists').addEventListener('change', updateWprRecordWarning);
 
       /**
-       * Reads a WprGo archive file and returns the wprGo request payload,
+       * Reads a WprGo archive file and returns the wpr request payload,
        * or null (after alerting) if the file fails the basic integrity check.
        */
       async function wprGoPayloadForReplayFile(file) {
@@ -728,7 +742,7 @@ details pre {
           const wprLink = document.createElement('a');
           wprLink.textContent = '[wpr]';
           wprLink.href = url;
-          wprLink.download = `${new URL(report.url).hostname}_${dateStr}_${timeStr}.wprgo`;
+          wprLink.download = `${new URL(report.url).hostname}_${dateStr}_${timeStr}.wpr`;
           const wprSpan = document.createElement('span');
           wprSpan.appendChild(wprLink);
           wprSpan.classList.add('wpr-link');
@@ -736,6 +750,19 @@ details pre {
         }
 
         card.appendChild(h2);
+
+        if (report.wprS3Key) {
+          const s3Code = document.createElement('code');
+          s3Code.textContent = `stored: s3://${report.wprS3Bucket ?? '<bucket>'}/${report.wprS3Key}`;
+          card.appendChild(s3Code);
+          card.appendChild(document.createElement('br'));
+        } else if (report.wprS3Error) {
+          const s3Error = document.createElement('span');
+          s3Error.classList.add('warning-icon');
+          s3Error.textContent = `s3: ${report.wprS3Error}`;
+          card.appendChild(s3Error);
+          card.appendChild(document.createElement('br'));
+        }
 
         if (report.url !== report.originalUrl) {
           const h3 = document.createElement('h3');
@@ -933,14 +960,17 @@ details pre {
 
         // Build the WprGo payload: replay a selected archive, else record if checked
         const wprReplayFile = wprReplayFileInput.files[0];
-        let wprGo;
+        let wpr;
         if (wprReplayFile) {
-          wprGo = await wprGoPayloadForReplayFile(wprReplayFile);
-          if (wprGo === null) {
+          wpr = await wprGoPayloadForReplayFile(wprReplayFile);
+          if (wpr === null) {
             return;
           }
         } else if (wprRecordCheckbox.checked) {
-          wprGo = { action: 'record' };
+          wpr = { action: 'record' };
+          if (wprS3StoreCheckbox.checked) {
+            wpr.archive = 's3+inline';
+          }
         }
 
         urlInput.disabled = true;
@@ -973,7 +1003,7 @@ details pre {
           viewport: document.getElementById('viewport-select').value,
           userAgent: document.getElementById('user-agent-input')?.value,
           disableFeatures,
-          wprGo
+          wpr
         })
         const newCard = await fetch('/check/stream', {
           method: 'POST',
@@ -1028,6 +1058,7 @@ details pre {
         for (const checkbox of document.querySelectorAll('input[type="checkbox"]')) {
           checkbox.disabled = false;
         }
+        updateWprS3StoreEnabled();
         executeButton.disabled = false;
         spinner.classList.remove('active');
         progressArea.classList.remove('active');

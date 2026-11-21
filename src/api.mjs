@@ -20,6 +20,7 @@ import { checkPage } from './lib.mjs'
 import { getFilteredKnownDevices } from './setupUtil.mjs'
 import { isValidHttpUrl } from './util.mjs'
 import { MAX_ARCHIVE_BYTES } from './netlogConfig.mjs'
+import { ARCHIVE_OPTIONS, archiveModeWantsS3, wprS3Enabled } from './wprS3.mjs'
 import { VIEWPORT_PRESETS, REQUEST_DISABLE_FEATURES_ALLOWLIST } from './puppeteer.mjs'
 
 // Calculate default max concurrency based on available memory
@@ -107,7 +108,7 @@ const CHECK_API_FIELDS = [
   'viewport',
   'userAgent',
   'disableFeatures',
-  'wprGo'
+  'wpr'
 ]
 const buildCheckArgs = (body) => ({
   ...Object.fromEntries(CHECK_API_FIELDS.map(field => [field, body[field]])),
@@ -269,12 +270,18 @@ router.get('/options.json', async (ctx) => {
 // Returns { status, body } for the first failed constraint, or null when the
 // request is well-formed.
 const validateCheckRequest = (body) => {
+  // Unknown fields (e.g. the pre-rename wprGo name) are rejected instead of
+  // being silently dropped: buildCheckArgs only copies the allowlist, so an
+  // ignored field would change what the request does without any signal
+  if (Object.keys(body).some(field => !CHECK_API_FIELDS.includes(field))) {
+    return { status: 400, body: { error: 'Bad Request: unknown field' } }
+  }
   const {
     device,
     viewport,
     location,
     disableFeatures,
-    wprGo,
+    wpr,
     url
   } = body
 
@@ -318,34 +325,50 @@ const validateCheckRequest = (body) => {
   }
 
   // Validate WprGo options
-  if (wprGo !== undefined) {
-    if (typeof wprGo !== 'object' || wprGo === null || Array.isArray(wprGo)) {
-      return { status: 400, body: { error: 'Bad Request: wprGo must be an object' } }
+  if (wpr !== undefined) {
+    if (typeof wpr !== 'object' || wpr === null || Array.isArray(wpr)) {
+      return { status: 400, body: { error: 'Bad Request: wpr must be an object' } }
     }
 
-    if (wprGo.action !== 'record' && wprGo.action !== 'replay') {
-      return { status: 400, body: { error: 'Bad Request: wprGo.action must be "record" or "replay"' } }
+    if (wpr.action !== 'record' && wpr.action !== 'replay') {
+      return { status: 400, body: { error: 'Bad Request: wpr.action must be "record" or "replay"' } }
     }
 
     // Server-local archive paths are rejected at the API boundary: they let API
-    // clients make wpr read arbitrary files. Upload the archive via wprGo.data
+    // clients make wpr read arbitrary files. Upload the archive via wpr.data
     // instead (materialized under a randomized server-side tmp path).
-    if (wprGo.path !== undefined) {
-      return { status: 400, body: { error: 'Bad Request: wprGo.path is not supported; upload the archive via wprGo.data' } }
+    if (wpr.path !== undefined) {
+      return { status: 400, body: { error: 'Bad Request: wpr.path is not supported; upload the archive via wpr.data' } }
     }
 
-    if (wprGo.data !== undefined && (typeof wprGo.data !== 'string' || !wprGo.data)) {
-      return { status: 400, body: { error: 'Bad Request: wprGo.data must be a non-empty base64 string' } }
+    if (wpr.data !== undefined && (typeof wpr.data !== 'string' || !wpr.data)) {
+      return { status: 400, body: { error: 'Bad Request: wpr.data must be a non-empty base64 string' } }
     }
 
-    if (wprGo.data !== undefined && wprGo.action !== 'replay') {
-      return { status: 400, body: { error: 'Bad Request: wprGo.data is only supported for replay action' } }
+    if (wpr.data !== undefined && wpr.action !== 'replay') {
+      return { status: 400, body: { error: 'Bad Request: wpr.data is only supported for replay action' } }
+    }
+
+    // Archive handling for record captures: inline base64 (default), S3
+    // storage with a key-only response, or both
+    if (wpr.archive !== undefined) {
+      if (typeof wpr.archive !== 'string' || !ARCHIVE_OPTIONS.includes(wpr.archive)) {
+        return { status: 400, body: { error: `Bad Request: wpr.archive must be one of ${JSON.stringify(ARCHIVE_OPTIONS)}` } }
+      }
+
+      if (wpr.action !== 'record' && wpr.archive !== '') {
+        return { status: 400, body: { error: 'Bad Request: wpr.archive is only supported for record action' } }
+      }
+
+      if (archiveModeWantsS3(wpr.archive) && !wprS3Enabled()) {
+        return { status: 400, body: { error: 'Bad Request: S3 archive storage is not configured (WPR_ARCHIVES_BUCKET)' } }
+      }
     }
   }
 
   // URL is only optional when replaying a WprGo archive (a URL is then taken
   // from the archive itself)
-  if (!url && !(wprGo?.action === 'replay' && wprGo.data !== undefined)) {
+  if (!url && !(wpr?.action === 'replay' && wpr.data !== undefined)) {
     return { status: 400, body: { error: 'Bad Request: url is required' } }
   }
 

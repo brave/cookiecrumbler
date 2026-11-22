@@ -21,6 +21,13 @@ permissions:
   id-token: write
   contents: read # This is required for actions/checkout
 
+env:
+  AWS_REGION: us-west-2
+  # SOCI Index Manifest v2 is required for new Fargate SOCI users.
+  SOCI_VERSION: 0.16.1
+  SOCI_SPAN_SIZE: "4194304" # 4 MiB
+  CRANE_VERSION: v0.22.1
+
 jobs:
   build-deploy:
     runs-on: ubuntu-latest
@@ -45,9 +52,26 @@ jobs:
           role-session-name: github-actions-ecr
           aws-region: us-west-2
 
-      - name: Login to public Amazon ECR
+      - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@7290e214a610b32bc0eef81748948b6d466a8783 # v2.2.0
+
+      - name: Install SOCI and crane
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/soci.tar.gz \
+            "https://github.com/awslabs/soci-snapshotter/releases/download/v${SOCI_VERSION}/soci-snapshotter-${SOCI_VERSION}-linux-amd64.tar.gz"
+          echo "2be9f26ad853455515da69885f8906e6aecc65684cc302f8689c25cad8417bc8  /tmp/soci.tar.gz" | sha256sum -c -
+          sudo tar -C /usr/local/bin -xzf /tmp/soci.tar.gz soci soci-snapshotter-grpc
+
+          curl -fsSL -o /tmp/crane.tar.gz \
+            "https://github.com/google/go-containerregistry/releases/download/${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz"
+          echo "0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0  /tmp/crane.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/crane.tar.gz -C /tmp crane
+          sudo mv /tmp/crane /usr/local/bin/crane
+
+          soci --version
+          crane version
 
       - name: Generate variables
         id: vars
@@ -58,7 +82,7 @@ jobs:
           echo "SETUP_CACHEBUST=$(date +'%Y-%m-%dT%H%M%S')" >> "$GITHUB_OUTPUT"
           echo "START_TIMESTAMP=$(date +%s)" >> "$GITHUB_OUTPUT"
 
-      - name: Build, tag, and push image to Amazon ECR
+      - name: Build image as gzip OCI archive
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           tags: ${{ steps.login-ecr.outputs.registry }}/${{ vars.COOKIECRUMBLER_ECR_REPOSITORY }}:latest
@@ -67,12 +91,34 @@ jobs:
             SETUP_CACHEBUST=${{ steps.vars.outputs.SETUP_CACHEBUST }}
             GIT_COMMIT=${{ github.sha }}
           cache-from: type=gha
-          cache-to: type=gha,mode=max,compression=zstd
-          outputs: type=image,oci-mediatypes=true,compression=zstd,compression-level=3,force-compression=true,push=true
+          cache-to: type=gha,mode=max
+          # Fargate SOCI supports gzip/uncompressed layers only, not zstd.
+          # OCI output preserves the image index needed by SOCI v2.
+          outputs: type=oci,dest=${{ runner.temp }}/image.tar,compression=gzip,force-compression=true
+          provenance: false
+          sbom: false
+
+      - name: Convert image to SOCI Index Manifest v2
+        run: |
+          set -euo pipefail
+          soci convert --standalone --format oci-dir \
+            --span-size "${SOCI_SPAN_SIZE}" \
+            --min-layer-size 10485760 \
+            "${RUNNER_TEMP}/image.tar" \
+            "${RUNNER_TEMP}/image-soci"
+
+      - name: Push SOCI-enabled image to Amazon ECR
+        run: |
+          set -euo pipefail
+          REGISTRY="${{ steps.login-ecr.outputs.registry }}"
+          IMAGE="${REGISTRY}/${{ vars.COOKIECRUMBLER_ECR_REPOSITORY }}:latest"
+          aws ecr get-login-password --region "${AWS_REGION}" \
+            | crane auth login "${REGISTRY}" --username AWS --password-stdin
+          crane push "${RUNNER_TEMP}/image-soci" "${IMAGE}"
 
       - name: Trigger ECS deployment
         run: |
           aws ecs update-service --cluster ${{ vars.COOKIECRUMBLER_ECS_CLUSTER_NAME }} --service ${{ vars.COOKIECRUMBLER_ECS_SERVICE_NAME }} --force-new-deployment --query service.serviceName --output text
-          if [ $(($(date +%s) - ${{ steps.vars.outputs.START_TIMESTAMP }})) -gt 105 ]; then
+          if [ $(($(date +%s) - ${{ steps.vars.outputs.START_TIMESTAMP }})) -gt 165 ]; then
             aws ecs wait services-stable --cluster ${{ vars.COOKIECRUMBLER_ECS_CLUSTER_NAME }} --services ${{ vars.COOKIECRUMBLER_ECS_SERVICE_NAME }}
           fi

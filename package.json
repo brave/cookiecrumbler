@@ -8,7 +8,7 @@
   },
   "scripts": {
     "setup": "node src/setup.mjs",
-    "serve": "node --import ./src/instrument.mjs src/api.mjs",
+    "serve": "node --import ./src/instrument.mjs src/server.mjs",
     "rebrowser-patches": "rebrowser-patches patch --packageName puppeteer-core",
     "test": "node --test test/*.mjs",
     "test:wpr": "node --test --test-name-pattern \"WPR replay\" test/test.mjs",

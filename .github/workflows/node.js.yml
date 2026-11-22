@@ -87,6 +87,10 @@ jobs:
 
         echo "BRAVE_BINARY=/usr/bin/${PACKAGE_NAME}" >> $GITHUB_ENV
 
+    - name: Prepare base profile
+      run: |
+        pnpm run setup "$BRAVE_BINARY"
+
     - name: Build WprGo binary for tests
       run: |
         curl -fsSL https://codeload.github.com/brave-experiments/webpagereplay/tar.gz/${{ env.WPR_GO_COMMIT }} | tar xz -C /tmp

@@ -1,7 +1,8 @@
-// Koa app factory for the check API: assembles middleware, request
-// validation and the routes into a self-contained app instance. The thin
+// Koa app factory for the check API: assembles middleware, the request
+// schema and the routes into a self-contained app instance. The thin
 // entrypoint src/server.mjs owns the process concerns (CLI arguments,
-// browser-binary check, listen).
+// browser-binary check, listen); tests build their own instance via
+// createApp on an ephemeral port.
 
 import fs from 'fs/promises'
 import zlib from 'zlib'
@@ -18,9 +19,10 @@ import Router from '@koa/router'
 import { Semaphore, withTimeout } from 'async-mutex'
 
 import { checkPage } from './lib.mjs'
-import { getFilteredKnownDevices } from './setupUtil.mjs'
-import { isValidHttpUrl } from './util.mjs'
+import { getFilteredKnownDevices, parseListCatalogComponentIds } from './setupUtil.mjs'
 import { VIEWPORT_PRESETS, REQUEST_DISABLE_FEATURES_ALLOWLIST } from './puppeteer.mjs'
+import { createCheckRequestSchema } from './schemas/check.mjs'
+import { validateBody } from './validate.mjs'
 
 function proxyToLocation (location, proxyList) {
   for (const region in proxyList) {
@@ -49,6 +51,20 @@ export const createApp = ({ browserBinaryPath }) => {
   const CAPACITY_ERROR = new Error('Too Many Requests: server is at capacity')
   const semaphore = withTimeout(new Semaphore(maxConcurrency), maxConcurrencyWaitMs, CAPACITY_ERROR)
 
+  const version = process.env.GIT_COMMIT ? process.env.GIT_COMMIT.slice(0, 6) : 'unknown'
+
+  const proxyList = process.env.PROXY_LIST ? JSON.parse(process.env.PROXY_LIST) : {}
+  const validProxies = Object.keys(proxyList).reduce((acc, region) => {
+    const countries = proxyList[region]
+    Object.keys(countries).forEach(country => {
+      const cities = countries[country]
+      Object.keys(cities).forEach(city => {
+        acc.push(cities[city])
+      })
+    })
+    return acc
+  }, [])
+
   const app = new Koa()
   // Raised json limit: WprGo replay archives are uploaded base64-encoded in the JSON body
   app.use(bodyParser({ jsonLimit: '200mb' }))
@@ -66,44 +82,6 @@ export const createApp = ({ browserBinaryPath }) => {
 
   Sentry.setupKoaErrorHandler(app)
 
-  const version = process.env.GIT_COMMIT ? process.env.GIT_COMMIT.slice(0, 6) : 'unknown'
-
-  const proxyList = process.env.PROXY_LIST ? JSON.parse(process.env.PROXY_LIST) : {}
-  const validProxies = Object.keys(proxyList).reduce((acc, region) => {
-    const countries = proxyList[region]
-    Object.keys(countries).forEach(country => {
-      const cities = countries[country]
-      Object.keys(cities).forEach(city => {
-        acc.push(cities[city])
-      })
-    })
-    return acc
-  }, [])
-
-  // Explicit allowlist: spreading the request body would let API clients inject
-  // internal options that checkPage and puppeteerConfigForArgs read, like
-  // executablePath, extraArgs or onProgress
-  const CHECK_API_FIELDS = [
-    'url',
-    'seconds',
-    'adblockLists',
-    'additionalFilterRules',
-    'screenshot',
-    'markup',
-    'location',
-    'slowCheck',
-    'device',
-    'viewport',
-    'userAgent',
-    'disableFeatures',
-    'wprGo'
-  ]
-  const buildCheckArgs = (body) => ({
-    ...Object.fromEntries(CHECK_API_FIELDS.map(field => [field, body[field]])),
-    seconds: body.seconds || 4,
-    executablePath: browserBinaryPath
-  })
-
   /**
    * Runs a check under the concurrency semaphore and stamps the report fields
    * both response paths need.
@@ -113,20 +91,6 @@ export const createApp = ({ browserBinaryPath }) => {
     report.version = version
     report.location = proxyToLocation(checkArgs.location, proxyList)
     return report
-  }
-
-  /**
-   * Validates the request body and builds checkPage args, or writes the
-   * validation error to the response and returns undefined.
-   */
-  const parseCheckRequest = (ctx) => {
-    const invalid = validateCheckRequest(ctx.request.body)
-    if (invalid !== null) {
-      ctx.status = invalid.status
-      ctx.body = invalid.body
-      return undefined
-    }
-    return buildCheckArgs(ctx.request.body)
   }
 
   /**
@@ -217,7 +181,22 @@ export const createApp = ({ browserBinaryPath }) => {
       })
   }
 
-  // Create a new router
+  const filteredDevices = getFilteredKnownDevices()
+
+  // The template profile's full List Catalog doubles as the request
+  // allowlist for adblockLists: it also contains the default-disabled lists
+  // that toggleAdblocklists can enable, unlike the UI-facing
+  // adblock_lists.json which lists only the default-enabled ones
+  const validAdblockLists = parseListCatalogComponentIds({ profileDir: path.join(import.meta.dirname, '..', 'profile') })
+  const checkRequestSchema = createCheckRequestSchema({
+    validProxies,
+    validDevices: filteredDevices,
+    validViewports: Object.keys(VIEWPORT_PRESETS),
+    validDisableFeatures: REQUEST_DISABLE_FEATURES_ALLOWLIST,
+    validAdblockLists
+  })
+  const buildCheckArgs = (body) => ({ ...body, executablePath: browserBinaryPath })
+
   const router = new Router()
 
   // Define routes
@@ -244,8 +223,6 @@ export const createApp = ({ browserBinaryPath }) => {
     ctx.response.type = 'json'
   })
 
-  const filteredDevices = getFilteredKnownDevices()
-
   router.get('/options.json', async (ctx) => {
     ctx.body = {
       devices: filteredDevices,
@@ -255,105 +232,9 @@ export const createApp = ({ browserBinaryPath }) => {
     ctx.response.type = 'json'
   })
 
-  // Returns { status, body } for the first failed constraint, or null when the
-  // request is well-formed.
-  const validateCheckRequest = (body) => {
-    const {
-      device,
-      viewport,
-      location,
-      disableFeatures,
-      wprGo,
-      url
-    } = body
-
-    // Validate device name
-    if (device && !filteredDevices.includes(device)) {
-      return { status: 400, body: { error: 'Bad Request: unknown device' } }
-    }
-
-    // Validate viewport preset
-    if (viewport && !Object.keys(VIEWPORT_PRESETS).includes(viewport)) {
-      return { status: 400, body: { error: 'Bad Request: unknown viewport preset' } }
-    }
-
-    // Ensure device and viewport are not both set (mutually exclusive)
-    if (device && viewport) {
-      return { status: 400, body: { error: 'Bad Request: cannot specify both device and viewport' } }
-    }
-
-    // Ensure location is in the configured proxy list
-    if (location && !validProxies.includes(location)) {
-      return { status: 400, body: { error: 'Bad Request: invalid location' } }
-    }
-
-    if (disableFeatures !== undefined) {
-      if (!Array.isArray(disableFeatures) || disableFeatures.some(feature => typeof feature !== 'string')) {
-        return { status: 400, body: { error: 'Bad Request: disableFeatures must be an array of strings' } }
-      }
-
-      const invalidFeatures = disableFeatures.filter(
-        feature => !REQUEST_DISABLE_FEATURES_ALLOWLIST.includes(feature)
-      )
-      if (invalidFeatures.length) {
-        return {
-          status: 400,
-          body: {
-            error: 'Bad Request: disableFeatures contains unsupported values',
-            invalidFeatures
-          }
-        }
-      }
-    }
-
-    // Validate WprGo options
-    if (wprGo !== undefined) {
-      if (typeof wprGo !== 'object' || wprGo === null || Array.isArray(wprGo)) {
-        return { status: 400, body: { error: 'Bad Request: wprGo must be an object' } }
-      }
-
-      if (wprGo.action !== 'record' && wprGo.action !== 'replay') {
-        return { status: 400, body: { error: 'Bad Request: wprGo.action must be "record" or "replay"' } }
-      }
-
-      // Server-local archive paths are rejected at the API boundary: they let API
-      // clients make wpr read arbitrary files. Upload the archive via wprGo.data
-      // instead (materialized under a randomized server-side tmp path).
-      if (wprGo.path !== undefined) {
-        return { status: 400, body: { error: 'Bad Request: wprGo.path is not supported; upload the archive via wprGo.data' } }
-      }
-
-      if (wprGo.data !== undefined && (typeof wprGo.data !== 'string' || !wprGo.data)) {
-        return { status: 400, body: { error: 'Bad Request: wprGo.data must be a non-empty base64 string' } }
-      }
-
-      if (wprGo.data !== undefined && wprGo.action !== 'replay') {
-        return { status: 400, body: { error: 'Bad Request: wprGo.data is only supported for replay action' } }
-      }
-    }
-
-    // URL is only optional when replaying a WprGo archive (a URL is then taken
-    // from the archive itself)
-    if (!url && !(wprGo?.action === 'replay' && wprGo.data !== undefined)) {
-      return { status: 400, body: { error: 'Bad Request: url is required' } }
-    }
-
-    // Only http(s) URLs are navigable by the check browser (blocks file://, etc.)
-    if (url !== undefined && url !== '' && !isValidHttpUrl(url)) {
-      return { status: 400, body: { error: 'Bad Request: url must be a valid http or https URL' } }
-    }
-
-    return null
-  }
-
-  router.post('/check', async (ctx) => {
-    const checkArgs = parseCheckRequest(ctx)
-    if (checkArgs === undefined) {
-      return
-    }
-
+  router.post('/check', validateBody(checkRequestSchema), async (ctx) => {
     try {
-      const report = await runCheck(checkArgs)
+      const report = await runCheck(buildCheckArgs(ctx.state.body))
       ctx.body = JSON.stringify(report)
       ctx.response.type = 'json'
     } catch (error) {
@@ -366,12 +247,8 @@ export const createApp = ({ browserBinaryPath }) => {
     }
   })
 
-  router.post('/check/stream', async (ctx) => {
-    const checkArgs = parseCheckRequest(ctx)
-    if (checkArgs === undefined) {
-      return
-    }
-    streamCheckProgress(ctx, checkArgs)
+  router.post('/check/stream', validateBody(checkRequestSchema), async (ctx) => {
+    streamCheckProgress(ctx, buildCheckArgs(ctx.state.body))
   })
 
   app.use(router.routes())

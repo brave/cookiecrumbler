@@ -501,7 +501,7 @@ details pre {
       document.getElementById('adblock-lists').addEventListener('change', updateWprRecordWarning);
 
       /**
-       * Reads a WprGo archive file and returns the wprGo request payload,
+       * Reads a WprGo archive file and returns the wpr request payload,
        * or null (after alerting) if the file fails the basic integrity check.
        */
       async function wprGoPayloadForReplayFile(file) {
@@ -933,14 +933,14 @@ details pre {
 
         // Build the WprGo payload: replay a selected archive, else record if checked
         const wprReplayFile = wprReplayFileInput.files[0];
-        let wprGo;
+        let wpr;
         if (wprReplayFile) {
-          wprGo = await wprGoPayloadForReplayFile(wprReplayFile);
-          if (wprGo === null) {
+          wpr = await wprGoPayloadForReplayFile(wprReplayFile);
+          if (wpr === null) {
             return;
           }
         } else if (wprRecordCheckbox.checked) {
-          wprGo = { action: 'record' };
+          wpr = { action: 'record' };
         }
 
         urlInput.disabled = true;
@@ -973,7 +973,7 @@ details pre {
           viewport: document.getElementById('viewport-select').value,
           userAgent: document.getElementById('user-agent-input')?.value,
           disableFeatures,
-          wprGo
+          wpr
         })
         const newCard = await fetch('/check/stream', {
           method: 'POST',

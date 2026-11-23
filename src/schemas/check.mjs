@@ -16,20 +16,20 @@ export function createCheckRequestSchema ({ validProxies, validDevices, validVie
   // must come from the configured catalog
   const inList = list => (value) => !value || list.includes(value)
 
-  const wprGoSchema = z.object({
+  const wprSchema = z.object({
     action: z.enum(['record', 'replay']),
-    data: z.string().min(1, 'wprGo.data must be a non-empty base64 string').optional(),
+    data: z.string().min(1, 'wpr.data must be a non-empty base64 string').optional(),
     // Server-local archive paths are rejected at the API boundary: they let
-    // wpr read arbitrary files. Upload the archive via wprGo.data instead
+    // wpr read arbitrary files. Upload the archive via wpr.data instead
     // (materialized under a randomized server-side tmp path). never +
     // optional: only fails when a value is actually supplied
-    path: z.never({ message: 'wprGo.path is not supported; upload the archive via wprGo.data' }).optional()
-  }).strict().superRefine((wprGo, ctx) => {
-    if (wprGo.action === 'replay' && wprGo.data === undefined) {
-      ctx.addIssue({ code: 'custom', path: ['data'], message: 'wprGo.data is required for replay action' })
+    path: z.never({ message: 'wpr.path is not supported; upload the archive via wpr.data' }).optional()
+  }).strict().superRefine((wpr, ctx) => {
+    if (wpr.action === 'replay' && wpr.data === undefined) {
+      ctx.addIssue({ code: 'custom', path: ['data'], message: 'wpr.data is required for replay action' })
     }
-    if (wprGo.data !== undefined && wprGo.action !== 'replay') {
-      ctx.addIssue({ code: 'custom', path: ['data'], message: 'wprGo.data is only supported for replay action' })
+    if (wpr.data !== undefined && wpr.action !== 'replay') {
+      ctx.addIssue({ code: 'custom', path: ['data'], message: 'wpr.data is only supported for replay action' })
     }
   })
 
@@ -70,14 +70,14 @@ export function createCheckRequestSchema ({ validProxies, validDevices, validVie
         { message: 'disableFeatures contains unsupported values' }
       )
       .optional(),
-    wprGo: wprGoSchema.optional()
+    wpr: wprSchema.optional()
   }).strict().superRefine((body, ctx) => {
     if (body.device && body.viewport) {
       ctx.addIssue({ code: 'custom', path: [], message: 'cannot specify both device and viewport' })
     }
     // URL is only optional when replaying a WprGo archive (a URL is then
     // taken from the archive itself)
-    if (!body.url && !(body.wprGo?.action === 'replay' && body.wprGo.data !== undefined)) {
+    if (!body.url && !(body.wpr?.action === 'replay' && body.wpr.data !== undefined)) {
       ctx.addIssue({ code: 'custom', path: ['url'], message: 'url is required' })
     }
   })

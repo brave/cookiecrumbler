@@ -118,7 +118,7 @@ export const checkPage = async (args) => {
   const slowCheck = args.slowCheck ?? false
   const blockNonHttpRequests = args.blockNonHttpRequests ?? true
   const deviceName = args.device
-  const wprGo = args.wprGo
+  const wpr = args.wpr
   const userAgent = args.userAgent
 
   const report = {
@@ -177,7 +177,7 @@ export const checkPage = async (args) => {
     await fs.writeFile(localStatePath, JSON.stringify(localState))
   }
 
-  if (wprGo?.action === 'replay' && args.location) {
+  if (wpr?.action === 'replay' && args.location) {
     // Replay routes traffic through the wpr process, which cannot be combined
     // with a client-specified proxy; netlog recording does not use wpr and
     // works with proxies.
@@ -194,14 +194,14 @@ export const checkPage = async (args) => {
     proxyUrl = await anonymizeProxy(proxyUrlWithAuth(args.location))
     console.log(`Started local proxy server: ${proxyUrl}`)
   }
-  if (wprGo !== undefined) {
+  if (wpr !== undefined) {
     try {
       reportProgress('starting-wpr')
       // Record mode has no archive to pick a first URL from
-      if (wprGo.action === 'record' && !url) {
+      if (wpr.action === 'record' && !url) {
         throw new WprGoError('A URL is required when recording a WprGo archive')
       }
-      wprSession = new WprGoSession(wprGo)
+      wprSession = new WprGoSession(wpr)
       const prepared = await wprSession.prepare({ url })
       if (!url) {
         if (prepared.firstUrl === undefined) {

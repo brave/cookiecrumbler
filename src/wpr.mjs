@@ -171,7 +171,7 @@ export class WprGoSession {
       throw new WprGoError(`Unknown WprGo action: ${action}`)
     }
     if (action === 'replay' && data === undefined) {
-      throw new WprGoError('wprGo.data is required for replay action')
+      throw new WprGoError('wpr.data is required for replay action')
     }
 
     this._action = action

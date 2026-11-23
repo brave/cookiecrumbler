@@ -20,7 +20,7 @@ const formatIssues = (error) => error.issues.slice(0, MAX_ISSUES).map(issue => (
 // Unknown field names get echoed in 400 responses; capping their length here keeps every echo small without response-side truncation
 const MAX_KEY_LENGTH = 500
 
-// Only the top level and one nesting level down (wprGo, adblockLists) carry
+// Only the top level and one nesting level down (wpr, adblockLists) carry
 // strict-object keys, so a shallow walk cannot be blown up by deep nesting
 const hasOversizedKey = (value, depth = 0) => {
   if (depth > 1 || typeof value !== 'object' || value === null || Array.isArray(value)) {

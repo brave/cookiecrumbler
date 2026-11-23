@@ -52,7 +52,7 @@ describe('check request schema', () => {
       slowCheck: true,
       userAgent: 'agent',
       disableFeatures: ['FeatureX'],
-      wprGo: { action: 'record' }
+      wpr: { action: 'record' }
     })
     t.assert.strictEqual(result.success, true)
   })
@@ -160,45 +160,45 @@ describe('check request schema', () => {
   it('requires a url unless replaying an uploaded archive', (t) => {
     t.assert.deepStrictEqual(messagesAt(schema.safeParse({}), 'url'), ['url is required'])
     t.assert.deepStrictEqual(messagesAt(schema.safeParse({ url: '' }), 'url'), ['url is required'])
-    t.assert.strictEqual(schema.safeParse({ wprGo: { action: 'replay', data: 'abc' } }).success, true)
+    t.assert.strictEqual(schema.safeParse({ wpr: { action: 'replay', data: 'abc' } }).success, true)
     // Replay without data still needs a url: there is nothing to take one from
-    t.assert.deepStrictEqual(messagesAt(schema.safeParse({ wprGo: { action: 'replay' } }), 'url'), ['url is required'])
+    t.assert.deepStrictEqual(messagesAt(schema.safeParse({ wpr: { action: 'replay' } }), 'url'), ['url is required'])
   })
 
-  it('validates wprGo actions and data', (t) => {
-    t.assert.strictEqual(issuesAt(schema.safeParse({ url: 'https://example.com/', wprGo: { action: 'nope' } }), 'wprGo.action').length, 1)
+  it('validates wpr actions and data', (t) => {
+    t.assert.strictEqual(issuesAt(schema.safeParse({ url: 'https://example.com/', wpr: { action: 'nope' } }), 'wpr.action').length, 1)
     t.assert.deepStrictEqual(
-      messagesAt(schema.safeParse({ url: 'https://example.com/', wprGo: { action: 'record', data: 'abc' } }), 'wprGo.data'),
-      ['wprGo.data is only supported for replay action']
+      messagesAt(schema.safeParse({ url: 'https://example.com/', wpr: { action: 'record', data: 'abc' } }), 'wpr.data'),
+      ['wpr.data is only supported for replay action']
     )
     t.assert.deepStrictEqual(
-      messagesAt(schema.safeParse({ url: 'https://example.com/', wprGo: { action: 'replay', data: '' } }), 'wprGo.data'),
-      ['wprGo.data must be a non-empty base64 string']
+      messagesAt(schema.safeParse({ url: 'https://example.com/', wpr: { action: 'replay', data: '' } }), 'wpr.data'),
+      ['wpr.data must be a non-empty base64 string']
     )
     // without data there is no archive to replay: WprGoSession would throw
     // mid-check and the routes would return an error report instead of 400
     t.assert.deepStrictEqual(
-      messagesAt(schema.safeParse({ url: 'https://example.com/', wprGo: { action: 'replay' } }), 'wprGo.data'),
-      ['wprGo.data is required for replay action']
+      messagesAt(schema.safeParse({ url: 'https://example.com/', wpr: { action: 'replay' } }), 'wpr.data'),
+      ['wpr.data is required for replay action']
     )
   })
 
-  it('rejects server-local wprGo paths with the upload hint', (t) => {
-    const result = schema.safeParse({ url: 'https://example.com/', wprGo: { action: 'replay', path: '/etc/passwd' } })
-    t.assert.deepStrictEqual(messagesAt(result, 'wprGo.path'), ['wprGo.path is not supported; upload the archive via wprGo.data'])
+  it('rejects server-local wpr paths with the upload hint', (t) => {
+    const result = schema.safeParse({ url: 'https://example.com/', wpr: { action: 'replay', path: '/etc/passwd' } })
+    t.assert.deepStrictEqual(messagesAt(result, 'wpr.path'), ['wpr.path is not supported; upload the archive via wpr.data'])
   })
 
   it('names unknown fields instead of dropping them', (t) => {
-    const result = schema.safeParse({ url: 'https://example.com/', wpr: { action: 'record' }, extra: 1 })
+    const result = schema.safeParse({ url: 'https://example.com/', wprGo: { action: 'record' }, extra: 1 })
     t.assert.strictEqual(result.success, false)
     const unrecognized = result.error.issues.filter(issue => issue.code === 'unrecognized_keys')
-    t.assert.deepStrictEqual(unrecognized.flatMap(issue => issue.keys ?? []), ['wpr', 'extra'])
+    t.assert.deepStrictEqual(unrecognized.flatMap(issue => issue.keys ?? []), ['wprGo', 'extra'])
     t.assert.strictEqual(issuesAt(result, 'wprGo').length, 0)
   })
 
-  it('names unknown wprGo fields', (t) => {
-    const result = schema.safeParse({ url: 'https://example.com/', wprGo: { action: 'record', captureInfo: {} } })
-    t.assert.strictEqual(issuesAt(result, 'wprGo').length, 1)
+  it('names unknown wpr fields', (t) => {
+    const result = schema.safeParse({ url: 'https://example.com/', wpr: { action: 'record', captureInfo: {} } })
+    t.assert.strictEqual(issuesAt(result, 'wpr').length, 1)
   })
 })
 
@@ -243,14 +243,14 @@ describe('check API request boundary', () => {
   })
 
   it('names unknown fields at the HTTP boundary', async (t) => {
-    // 'wpr' is the post-rename field name and must not be accepted on this
+    // 'wprGo' is the pre-rename field name and must not be accepted on this
     // contract; the strict schema names it instead of silently dropping it
-    const response = await post('/check', { url: 'https://example.com/', wpr: { action: 'record' } })
+    const response = await post('/check', { url: 'https://example.com/', wprGo: { action: 'record' } })
     t.assert.strictEqual(response.status, 400)
     const body = await response.json()
     t.assert.deepStrictEqual(
       body.issues.filter(issue => issue.code === 'unrecognized_keys').flatMap(issue => issue.keys ?? []),
-      ['wpr']
+      ['wprGo']
     )
   })
 
@@ -296,13 +296,13 @@ describe('check API request boundary', () => {
     }
   })
 
-  it('requires wprGo.data for replay before the check starts', async (t) => {
+  it('requires wpr.data for replay before the check starts', async (t) => {
     // otherwise the routes would launch the check and answer with an error
     // report produced by WprGoSession throwing mid-run
-    const response = await post('/check', { url: 'https://example.com/', wprGo: { action: 'replay' } })
+    const response = await post('/check', { url: 'https://example.com/', wpr: { action: 'replay' } })
     t.assert.strictEqual(response.status, 400)
     const body = await response.json()
-    t.assert.deepStrictEqual(body.issues.map(issue => issue.path), ['wprGo.data'])
-    t.assert.match(body.error, /wprGo\.data is required for replay action/)
+    t.assert.deepStrictEqual(body.issues.map(issue => issue.path), ['wpr.data'])
+    t.assert.match(body.error, /wpr\.data is required for replay action/)
   })
 })

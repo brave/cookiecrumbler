@@ -21,6 +21,7 @@ import { Semaphore, withTimeout } from 'async-mutex'
 import { checkPage } from './lib.mjs'
 import { getFilteredKnownDevices, parseListCatalogComponentIds } from './setupUtil.mjs'
 import { MAX_ARCHIVE_BYTES } from './netlogConfig.mjs'
+import { ARCHIVE_OPTIONS, wprS3Enabled } from './wprS3.mjs'
 import { VIEWPORT_PRESETS, REQUEST_DISABLE_FEATURES_ALLOWLIST } from './puppeteer.mjs'
 import { createCheckRequestSchema } from './schemas/check.mjs'
 import { validateBody } from './validate.mjs'
@@ -194,7 +195,9 @@ export const createApp = ({ browserBinaryPath }) => {
     validDevices: filteredDevices,
     validViewports: Object.keys(VIEWPORT_PRESETS),
     validDisableFeatures: REQUEST_DISABLE_FEATURES_ALLOWLIST,
-    validAdblockLists
+    validAdblockLists,
+    validArchiveModes: ARCHIVE_OPTIONS,
+    wprS3Enabled: wprS3Enabled()
   })
   const buildCheckArgs = (body) => ({ ...body, executablePath: browserBinaryPath })
 

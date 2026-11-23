@@ -76,6 +76,34 @@ services:
       timeout: 5s
       retries: 10
 
+  # Local AWS emulator (ministack): dev S3 endpoint for WPR archives.
+  # All services share one port (4566). The brave_ministack service below
+  # connects with the emulator's test credentials under their standard AWS_*
+  # names. Reachable only on the compose network at http://ministack:4566
+  # (no host port publish).
+  ministack:
+    image: ministackorg/ministack:full@sha256:6cc353bd071cedef34718febeaac09b80b8e82c8cb0cb0caef44f7b4f87dfe56
+    profiles:
+      - s3
+    restart: unless-stopped
+    environment:
+      - GATEWAY_PORT=4566
+      - MINISTACK_REGION=${MINISTACK_REGION:-us-east-1}
+      - S3_PERSIST=1
+      # Visible to the init script below (compose interpolates it from .env)
+      - WPR_ARCHIVES_BUCKET=${WPR_ARCHIVES_BUCKET:-}
+    volumes:
+      - ministack_s3_data:/tmp/ministack-data/s3
+      # Post-ready init script: creates the archive bucket on fresh stacks
+      # (the aws CLI is bundled and credentials/endpoint are injected)
+      - ./docker/ministack-initaws/ready.d:/docker-entrypoint-initaws.d/ready.d:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4566/_ministack/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
   brave_ollama:
     <<: *brave_base
     environment:
@@ -84,6 +112,23 @@ services:
       - ollama
     depends_on:
       - ollama
+
+  # App variant for S3 archive development: same image, plus ministack's test
+  # credentials under their standard AWS_* names so the SDK's default
+  # credential chain resolves them (no code-side credential handling, and the
+  # host .env's AWS_* values - used by litellm for Bedrock - stay untouched).
+  brave_ministack:
+    <<: *brave_base
+    environment:
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_DEFAULT_REGION=${MINISTACK_REGION:-us-east-1}
+      - S3_ENDPOINT_URL=http://ministack:4566
+    profiles:
+      - s3
+    depends_on:
+      ministack:
+        condition: service_healthy
 
   ollama:
     image: ollama/ollama:latest
@@ -107,3 +152,4 @@ services:
 volumes:
   ollama_data:
   postgres_data:
+  ministack_s3_data:

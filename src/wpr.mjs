@@ -166,7 +166,7 @@ const decodeArchiveBuffer = async (buf) => {
  * filesystem paths.
  */
 export class WprGoSession {
-  constructor ({ action, data } = {}) {
+  constructor ({ action, data, captureInfo } = {}) {
     if (action !== 'record' && action !== 'replay') {
       throw new WprGoError(`Unknown WprGo action: ${action}`)
     }
@@ -176,6 +176,9 @@ export class WprGoSession {
 
     this._action = action
     this._data = data
+    // Record-only facts stamped into the archive's Metadata (captureClass,
+    // adblockLists, additionalFilterRules); ignored for replay
+    this._captureInfo = captureInfo
     this._archivePath = undefined
     this._archive = undefined
     this._tmpDirs = []
@@ -189,6 +192,10 @@ export class WprGoSession {
 
   get action () {
     return this._action
+  }
+
+  get recordedAt () {
+    return this._recordedAt
   }
 
   get ports () {
@@ -355,7 +362,7 @@ export class WprGoSession {
    */
   async _materializeArchivePath () {
     const dir = await this._makeTmpDir('cookiecrumbler-wprgo-archive-')
-    return path.join(dir, `${randomUUID()}.wprgo`)
+    return path.join(dir, `${randomUUID()}.wpr`)
   }
 
   /**
@@ -435,9 +442,10 @@ export class WprGoSession {
 
   /**
    * Converts the recorded netlog into a WprGo archive and stamps
-   * cookiecrumbler metadata (the original URL) into it, so replay can recover
-   * the URL deterministically, before returning it as base64. Errors are
-   * surfaced as WprGoError.
+   * cookiecrumbler metadata (the original URL, capture time and the capture
+   * info: filter-list class and configuration) into it, so replay can recover
+   * the URL deterministically and regression tooling can compare captures,
+   * before returning it as base64. Errors are surfaced as WprGoError.
    */
   async _buildRecordedArchive () {
     try {
@@ -445,7 +453,7 @@ export class WprGoSession {
         console.log(`Parsing netlog from ${this._netlogPath}`)
         const { gz, stats } = await buildArchiveInWorker(this._netlogPath, {
           ...this._recordingContext.archiveOptions,
-          metadata: JSON.stringify({ originalUrl: this._url, recordedAt: this._recordedAt })
+          metadata: JSON.stringify({ originalUrl: this._url, recordedAt: this._recordedAt, ...this._captureInfo })
         })
         const archiveData = gz.toString('base64')
         console.log(`Built archive with ${stats.hosts} hosts (${stats.exchanges} exchanges, ${archiveData.length} bytes)`)

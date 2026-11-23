@@ -190,7 +190,7 @@ describe('Cookie consent tests', { concurrency: CONCURRENCY }, () => {
 
 // WPR replay test cases: [archiveName, expectedUrl, expectedHash,
 // expectedScrollBlocking, problematicOverlay, unsupportedBrowser].
-// Archives live in test/data_wpr/<archiveName>.wprgo and are replayed through
+// Archives live in test/data_wpr/<archiveName>.wpr and are replayed through
 // WprGo, so the browser loads the recorded page without internet access.
 // Expectations mirror the cookie consent tests; capture hashes from a first
 // run's diagnostics output.
@@ -209,7 +209,7 @@ if (!wprAvailable) {
 describe('WPR replay tests', { concurrency: CONCURRENCY, skip: !wprAvailable }, () => {
   for (const [archiveName, expectedUrl, expectedHash, expectedScrollBlocking, problematicOverlay, unsupportedBrowser] of wprTestCases) {
     it(`wpr: ${archiveName}`, async (t) => {
-      const archiveData = (await readFile(path.join(import.meta.dirname, 'data_wpr', `${archiveName}.wprgo`))).toString('base64')
+      const archiveData = (await readFile(path.join(import.meta.dirname, 'data_wpr', `${archiveName}.wpr`))).toString('base64')
       const r = await checkPage({ wpr: { action: 'replay', data: archiveData }, ...args })
 
       if (r.error) {

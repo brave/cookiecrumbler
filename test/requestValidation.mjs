@@ -10,6 +10,7 @@ import path from 'node:path'
 
 import { createApp } from '../src/api.mjs'
 import { createCheckRequestSchema } from '../src/schemas/check.mjs'
+import { ARCHIVE_OPTIONS, archiveModeWantsS3 } from '../src/wprS3.mjs'
 
 // The boundary suite boots the real app, which reads the List Catalog from
 // the provisioned template profile at startup: fail with instructions
@@ -26,7 +27,21 @@ const schema = createCheckRequestSchema({
   validDevices: ['Device A'],
   validViewports: ['1200x800'],
   validDisableFeatures: ['FeatureX'],
-  validAdblockLists
+  validAdblockLists,
+  validArchiveModes: ARCHIVE_OPTIONS,
+  wprS3Enabled: false
+})
+
+// Same catalogs with S3 archive storage configured, for the archive rules
+// that depend on the bucket
+const s3Schema = createCheckRequestSchema({
+  validProxies: ['proxy-a'],
+  validDevices: ['Device A'],
+  validViewports: ['1200x800'],
+  validDisableFeatures: ['FeatureX'],
+  validAdblockLists,
+  validArchiveModes: ARCHIVE_OPTIONS,
+  wprS3Enabled: true
 })
 
 const issuesAt = (result, path) => result.error?.issues.filter(issue => issue.path.join('.') === path) ?? []
@@ -200,6 +215,35 @@ describe('check request schema', () => {
     const result = schema.safeParse({ url: 'https://example.com/', wpr: { action: 'record', captureInfo: {} } })
     t.assert.strictEqual(issuesAt(result, 'wpr').length, 1)
   })
+
+  it('validates wpr.archive modes', (t) => {
+    for (const archive of ARCHIVE_OPTIONS) {
+      const result = schema.safeParse({ url: 'https://example.com/', wpr: { action: 'record', archive } })
+      if (archiveModeWantsS3(archive)) {
+        t.assert.deepStrictEqual(messagesAt(result, 'wpr.archive'), ['S3 archive storage is not configured (WPR_ARCHIVES_BUCKET)'])
+      } else {
+        t.assert.strictEqual(result.success, true, `archive ${archive}`)
+      }
+    }
+    const unknown = schema.safeParse({ url: 'https://example.com/', wpr: { action: 'record', archive: 'nope' } })
+    t.assert.strictEqual(issuesAt(unknown, 'wpr.archive').length, 1)
+  })
+
+  it('allows s3 archive modes when storage is configured', (t) => {
+    for (const archive of ['s3', 's3+inline']) {
+      const result = s3Schema.safeParse({ url: 'https://example.com/', wpr: { action: 'record', archive } })
+      t.assert.strictEqual(result.success, true, `archive ${archive}`)
+    }
+  })
+
+  it('restricts archive handling to record captures', (t) => {
+    const result = schema.safeParse({ url: 'https://example.com/', wpr: { action: 'replay', archive: 'inline' } })
+    t.assert.deepStrictEqual(messagesAt(result, 'wpr.archive'), ['wpr.archive is only supported for record action'])
+    // '' is the UI's unset value and stays acceptable on either action
+    // (replay still needs its data upload, per the replay rule above)
+    const unset = schema.safeParse({ url: 'https://example.com/', wpr: { action: 'replay', data: 'abc', archive: '' } })
+    t.assert.strictEqual(unset.success, true)
+  })
 })
 
 describe('check API request boundary', () => {
@@ -252,6 +296,14 @@ describe('check API request boundary', () => {
       body.issues.filter(issue => issue.code === 'unrecognized_keys').flatMap(issue => issue.keys ?? []),
       ['wprGo']
     )
+  })
+
+  it('rejects s3 archive handling at the boundary when storage is unconfigured', async (t) => {
+    const response = await post('/check', { url: 'https://example.com/', wpr: { action: 'record', archive: 's3' } })
+    t.assert.strictEqual(response.status, 400)
+    const body = await response.json()
+    t.assert.deepStrictEqual(body.issues.map(issue => issue.path), ['wpr.archive'])
+    t.assert.match(body.error, /S3 archive storage is not configured/)
   })
 
   it('caps the issues detail list', async (t) => {

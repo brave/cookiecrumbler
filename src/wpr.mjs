@@ -456,7 +456,20 @@ export class WprGoSession {
     }
   }
 
+  /**
+   * Tears the session down: kills any still-running wpr process and removes
+   * the tracked tmp directories. The kill is a no-op on the normal path,
+   * where stop() has already exited the process, and a safety net for the
+   * failure paths that reach cleanup without stop() (the prepare() catch, or
+   * an unexpected error ahead of the stop() call in the caller) - so every
+   * cleanup() call site is guaranteed not to leak a live process.
+   */
   async cleanup () {
+    const process = this._process
+    if (process !== undefined && process.exitCode === null && process.signalCode === null) {
+      // don't leave the failed process running
+      process.kill('SIGKILL')
+    }
     await Promise.all(this._tmpDirs.map(dir => fs.rm(dir, { recursive: true, force: true })))
   }
 }

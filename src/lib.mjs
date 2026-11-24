@@ -500,9 +500,10 @@ export const checkPage = async (args) => {
         }
       }
     } catch (error) {
-      report.error = error instanceof WprGoError ? error.message : `WprGo failure: ${error.message}`
+      report.error ??= error instanceof WprGoError ? error.message : `WprGo failure: ${error.message}`
+      console.warn('WprGo stop failed:', error.message)
     } finally {
-      await wprSession.cleanup()
+      await tryOrWarn(() => wprSession.cleanup(), 'WprGo cleanup')
     }
   }
 

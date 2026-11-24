@@ -116,7 +116,7 @@ export const checkPage = async (args) => {
   const slowCheck = args.slowCheck ?? false
   const blockNonHttpRequests = args.blockNonHttpRequests ?? true
   const deviceName = args.device
-  const wprGo = args.wprGo
+  const wpr = args.wpr
   const userAgent = args.userAgent
 
   const report = {
@@ -151,12 +151,23 @@ export const checkPage = async (args) => {
   const listCatalogPath = path.join(workingProfile, 'gkboaolpopklhgplhaaiboijnklogmbc', '999.999', 'list_catalog.json')
   toggleAdblocklists(listCatalogPath, args.adblockLists ?? {})
 
+  let proxyUrl
+  const cleanupEarlyExit = async () => {
+    if (proxyUrl !== undefined) {
+      await closeAnonymizedProxy(proxyUrl, true)
+      proxyUrl = undefined
+      console.log('Proxy closed')
+    }
+    await fs.rm(workingProfile, { recursive: true, force: true })
+  }
+
   // Add individual filter rules to the custom filters list
   if (args.additionalFilterRules?.length) {
     const localStatePath = path.join(workingProfile, 'Local State')
     const localState = JSON.parse(await fs.readFile(localStatePath, 'utf8'))
     if (!localState.brave || !localState.brave.ad_block) {
       report.error = 'Unexpected profile format: missing brave ad_block settings'
+      await cleanupEarlyExit()
       return report
     }
     const additionalRulesText = args.additionalFilterRules.join('\n')
@@ -164,37 +175,49 @@ export const checkPage = async (args) => {
     await fs.writeFile(localStatePath, JSON.stringify(localState))
   }
 
-  let proxyUrl
-  if (wprGo && args.location) {
-    report.error = 'Specifying a proxy is currently unsupported when using WprGo'
+  if (wpr?.action === 'replay' && args.location) {
+    // Replay routes traffic through the wpr process, which cannot be combined
+    // with a client-specified proxy; netlog recording does not use wpr and
+    // works with proxies.
+    report.error = 'Specifying a proxy is currently unsupported when replaying WprGo archives'
+    await cleanupEarlyExit()
     return report
   }
   let wprSession
   let wprGoPorts
+  let netlogPath
+  let injectScript
   if (args.location) {
     reportProgress('starting-proxy')
     proxyUrl = await anonymizeProxy(proxyUrlWithAuth(args.location))
     console.log(`Started local proxy server: ${proxyUrl}`)
-  } else if (wprGo !== undefined) {
+  }
+  if (wpr !== undefined) {
     try {
       reportProgress('starting-wpr')
-      wprSession = new WprGoSession(wprGo)
-      const { firstUrl } = await wprSession.prepare({ url })
+      // Record mode has no archive to pick a first URL from
+      if (wpr.action === 'record' && !url) {
+        throw new WprGoError('A URL is required when recording a WprGo archive')
+      }
+      wprSession = new WprGoSession(wpr)
+      const prepared = await wprSession.prepare({ url })
       if (!url) {
-        if (firstUrl === undefined) {
-          report.error = 'No URL specified and no URLs found in the WprGo archive'
-          return report
+        if (prepared.firstUrl === undefined) {
+          throw new WprGoError('No URL specified and no URLs found in the WprGo archive')
         }
-        url = firstUrl
+        url = prepared.firstUrl
         report.originalUrl = url
         console.log(`No URL specified, using first URL from archive: ${url}`)
       }
       wprGoPorts = wprSession.ports
+      netlogPath = prepared.netlogPath
+      injectScript = prepared.injectScript
     } catch (error) {
       if (wprSession !== undefined) {
         await wprSession.cleanup()
       }
       report.error = error instanceof WprGoError ? error.message : `WprGo failure: ${error.message}`
+      await cleanupEarlyExit()
       return report
     }
   }
@@ -209,6 +232,7 @@ export const checkPage = async (args) => {
       pathForProfile: workingProfile,
       proxyServer: proxyUrl,
       wprGoPorts,
+      netlogPath,
       // Prevent mid-check Brave component downloads; setup must not set this.
       invalidateComponentUpdater: true
     })
@@ -229,6 +253,11 @@ export const checkPage = async (args) => {
     page = await browser.newPage()
     // puppeteer-extra's async page hook can race with the first navigation.
     await userAgentOverridePlugin.onPageCreated(page)
+    if (injectScript !== undefined) {
+      // WprGo record: no proxy rewrites responses, so the deterministic.js
+      // script is injected before any page script on every navigation instead.
+      await page.evaluateOnNewDocument(injectScript)
+    }
 
     const onScreenshot = args.onScreenshot
     const interimFrames = { count: 0, busy: false }
@@ -458,9 +487,15 @@ export const checkPage = async (args) => {
   if (wprSession !== undefined) {
     try {
       reportProgress('archiving-wpr')
-      const archiveData = await wprSession.stop()
-      if (archiveData !== undefined) {
-        report.wpr = archiveData
+      // stop() must run after the browser exited above: the browser only
+      // finalizes and stitches the netlog on exit. A browser that never
+      // launched leaves no netlog to convert (record), but a spawned wpr
+      // process still needs its teardown (replay).
+      if (browser !== undefined || wprSession.action === 'replay') {
+        const archiveData = await wprSession.stop()
+        if (archiveData !== undefined) {
+          report.wpr = archiveData
+        }
       }
     } catch (error) {
       report.error = error instanceof WprGoError ? error.message : `WprGo failure: ${error.message}`

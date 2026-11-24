@@ -8,11 +8,11 @@
   },
   "scripts": {
     "setup": "node src/setup.mjs",
-    "serve": "node --import ./src/instrument.mjs src/api.mjs",
+    "serve": "node --import ./src/instrument.mjs src/server.mjs",
     "rebrowser-patches": "rebrowser-patches patch --packageName puppeteer-core",
-    "test": "node --test test/test.mjs test/streamParser.test.mjs test/inpage-api.test.mjs",
+    "test": "node --test test/*.mjs",
     "test:wpr": "node --test --test-name-pattern \"WPR replay\" test/test.mjs",
-    "test:ci": "node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=@reporters/github --test-reporter-destination=stdout test/test.mjs test/streamParser.test.mjs test/inpage-api.test.mjs",
+    "test:ci": "node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=@reporters/github --test-reporter-destination=stdout test/*.mjs",
     "lint": "eslint",
     "lint-fix": "eslint --fix",
     "build": "esbuild --bundle --format=cjs --sourcemap --outdir=bundles src/inpage/index.mjs",
@@ -29,6 +29,7 @@
     "error-stack-parser": "^2.1.4",
     "koa": "^3.0.1",
     "koa-compress": "^5.1.1",
+    "netlog2wpr": "git+https://github.com/brave/netlog2wpr.git#main",
     "openai": "^6.0.0",
     "proxy-chain": "^3.0.0",
     "puppeteer-core": "~25.16.0",
@@ -40,7 +41,8 @@
     "rehype-parse": "^9.0.0",
     "rehype-stringify": "^10.0.0",
     "source-map": "^0.8.0",
-    "unified": "^11.0.4"
+    "unified": "^11.0.4",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@reporters/github": "2.1.4",

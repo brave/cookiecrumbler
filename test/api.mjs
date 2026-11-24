@@ -1,10 +1,11 @@
 import { once } from 'node:events'
 import fs from 'node:fs/promises'
 import { after, before, describe, it } from 'node:test'
+import { createApp } from '../src/api.mjs'
 
 process.env.MAX_CONCURRENCY = '1'
 process.env.MAX_CONCURRENCY_WAIT_MS = '50'
-const { app } = await import('../src/api.mjs')
+const app = createApp({ browserBinaryPath: 'unused-browser' })
 
 describe('POST /check errors', () => {
   let server
@@ -38,6 +39,13 @@ describe('POST /check errors', () => {
     t.assert.deepStrictEqual(await response.json(), body)
   }
 
+  function assertUrlValidationError (t, response) {
+    return assertJsonError(t, response, 400, {
+      error: 'Bad Request: url: url must be a valid http or https URL',
+      issues: [{ path: 'url', code: 'custom', message: 'url must be a valid http or https URL' }]
+    })
+  }
+
   it('formats malformed JSON errors from the body parser', async (t) => {
     await assertJsonError(t, await post('{'), 400, {
       error: 'Bad Request',
@@ -54,9 +62,7 @@ describe('POST /check errors', () => {
   })
 
   it('keeps the existing URL validation error', async (t) => {
-    await assertJsonError(t, await post('{"url":"file:///fixture"}'), 400, {
-      error: 'Bad Request: url must be a valid http or https URL'
-    })
+    await assertUrlValidationError(t, await post('{"url":"file:///fixture"}'))
   })
 
   it('reports a check failure without exposing the exception to the client', async (t) => {
@@ -104,10 +110,7 @@ describe('POST /check errors', () => {
   })
 
   it('keeps streaming-route validation errors in JSON', async (t) => {
-    const response = await post('{"url":"file:///fixture"}', 'application/json', '/check/stream')
-    await assertJsonError(t, response, 400, {
-      error: 'Bad Request: url must be a valid http or https URL'
-    })
+    await assertUrlValidationError(t, await post('{"url":"file:///fixture"}', 'application/json', '/check/stream'))
   })
 
   it('keeps check failures in-band after streaming headers are sent', async (t) => {

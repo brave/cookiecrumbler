@@ -10,6 +10,7 @@ import { PassThrough } from 'stream'
 import path from 'path'
 import process from 'process'
 import os from 'os'
+import { STATUS_CODES } from 'node:http'
 
 import Koa from 'koa'
 import { bodyParser } from '@koa/bodyparser'
@@ -67,6 +68,22 @@ export const createApp = ({ browserBinaryPath }) => {
   }, [])
 
   const app = new Koa()
+  app.use(async (ctx, next) => {
+    try {
+      await next()
+    } catch (error) {
+      if (ctx.headerSent || !ctx.writable) {
+        throw error
+      }
+
+      const err = error instanceof Error ? error : new Error('Unhandled request error', { cause: error })
+      const status = err.status || err.statusCode
+      ctx.status = typeof status === 'number' && status >= 400 && STATUS_CODES[status] ? status : 500
+      ctx.type = 'json'
+      ctx.body = { error: STATUS_CODES[ctx.status], identified: false }
+      ctx.app.emit('error', err, ctx)
+    }
+  })
   // Raised json limit: WprGo replay archives are uploaded base64-encoded in the JSON body
   app.use(bodyParser({ jsonLimit: Math.ceil(MAX_ARCHIVE_BYTES * 1.3) }))
   // Z_SYNC_FLUSH flushes the compressor on every write, so streamed bodies

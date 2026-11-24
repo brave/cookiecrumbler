@@ -72,7 +72,7 @@ describe('Failed browser launch cleanup', () => {
     t.assert.strictEqual(remove.mock.callCount(), 1)
   })
 
-  it('preserves the launch error when stopping WPR fails', async (t) => {
+  it('preserves the launch error when stopping WPR replay fails', async (t) => {
     const { args, temp } = await createLaunchFixture(t)
     t.mock.method(WprGoSession.prototype, 'prepare', async () => ({}))
     t.mock.getter(WprGoSession.prototype, 'ports', () => ({ http: 1, https: 2 }))
@@ -83,7 +83,7 @@ describe('Failed browser launch cleanup', () => {
     const cleanup = t.mock.method(WprGoSession.prototype, 'cleanup')
     const warn = t.mock.method(console, 'warn', () => {})
 
-    const report = await checkPage({ ...args, wprGo: { action: 'record' } })
+    const report = await checkPage({ ...args, wpr: { action: 'replay', data: 'fixture-archive' } })
     t.assert.strictEqual(report.error, launchError.stack)
     t.assert.strictEqual(stop.mock.callCount(), 1)
     t.assert.strictEqual(cleanup.mock.callCount(), 1)
@@ -94,7 +94,6 @@ describe('Failed browser launch cleanup', () => {
   it('preserves the launch error when WPR cleanup fails', async (t) => {
     const { args, temp } = await createLaunchFixture(t)
     t.mock.method(WprGoSession.prototype, 'prepare', async () => ({}))
-    t.mock.getter(WprGoSession.prototype, 'ports', () => ({ http: 1, https: 2 }))
     const launchError = new Error('fixture launch failure')
     t.mock.method(puppeteer, 'launch', async () => { throw launchError })
     const stop = t.mock.method(WprGoSession.prototype, 'stop', async () => {})
@@ -102,25 +101,24 @@ describe('Failed browser launch cleanup', () => {
     const cleanup = t.mock.method(WprGoSession.prototype, 'cleanup', async () => { throw cleanupError })
     const warn = t.mock.method(console, 'warn', () => {})
 
-    const report = await checkPage({ ...args, wprGo: { action: 'record' } })
+    const report = await checkPage({ ...args, wpr: { action: 'record' } })
     t.assert.strictEqual(report.error, launchError.stack)
-    t.assert.strictEqual(stop.mock.callCount(), 1)
+    t.assert.strictEqual(stop.mock.callCount(), 0)
     t.assert.strictEqual(cleanup.mock.callCount(), 1)
     t.assert.deepStrictEqual(warn.mock.calls.map(call => call.arguments), [['WprGo cleanup failed:', cleanupError.message]])
     t.assert.deepStrictEqual(await fs.readdir(temp), [])
   })
 
-  it('retains a recorded archive after a failed launch', async (t) => {
+  it('skips netlog conversion when the browser never launches', async (t) => {
     const { args, temp } = await createLaunchFixture(t)
     t.mock.method(WprGoSession.prototype, 'prepare', async () => ({}))
-    t.mock.getter(WprGoSession.prototype, 'ports', () => ({ http: 1, https: 2 }))
-    const stop = t.mock.method(WprGoSession.prototype, 'stop', async () => 'fixture-archive')
+    const stop = t.mock.method(WprGoSession.prototype, 'stop')
     const cleanup = t.mock.method(WprGoSession.prototype, 'cleanup')
 
-    const report = await checkPage({ ...args, wprGo: { action: 'record' } })
+    const report = await checkPage({ ...args, wpr: { action: 'record' } })
     t.assert.match(report.error, /Failed to launch the browser process/)
-    t.assert.strictEqual(report.wpr, 'fixture-archive')
-    t.assert.strictEqual(stop.mock.callCount(), 1)
+    t.assert.strictEqual(report.wpr, undefined)
+    t.assert.strictEqual(stop.mock.callCount(), 0)
     t.assert.strictEqual(cleanup.mock.callCount(), 1)
     t.assert.deepStrictEqual(await fs.readdir(temp), [])
   })

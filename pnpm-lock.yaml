@@ -209,6 +209,9 @@ importers:
       koa-compress:
         specifier: ^5.1.1
         version: 5.3.0
+      netlog2wpr:
+        specifier: git+https://github.com/brave/netlog2wpr.git#main
+        version: https://codeload.github.com/brave/netlog2wpr/tar.gz/6f338634a77813d5659a1cf39bd8e021d8aa6c22
       openai:
         specifier: ^6.0.0
         version: 6.49.0(ws@8.22.1)(zod@4.6.7)
@@ -245,6 +248,9 @@ importers:
       unified:
         specifier: ^11.0.4
         version: 11.0.5
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
     devDependencies:
       '@reporters/github':
         specifier: 2.1.4
@@ -1568,6 +1574,11 @@ packages:
     hasBin: true
     peerDependencies:
       eslint: ^9.22.0 || ^10.0.0
+
+  netlog2wpr@https://codeload.github.com/brave/netlog2wpr/tar.gz/6f338634a77813d5659a1cf39bd8e021d8aa6c22:
+    resolution: {gitHosted: true, integrity: sha512-VP4ilSPRfHRbnZpTKCjNJbJ0D8PBsZl1W2gXRVv6yhE7dDLExs8TxTsgqx1+OWccJCEnDFl6qoNCpVWYtrMmBQ==, tarball: https://codeload.github.com/brave/netlog2wpr/tar.gz/6f338634a77813d5659a1cf39bd8e021d8aa6c22}
+    version: 0.1.0
+    engines: {node: '>=24'}
 
   node@runtime:24.22.3:
     resolution:
@@ -3466,6 +3477,8 @@ snapshots:
       - supports-color
       - ts-declaration-location
       - typescript
+
+  netlog2wpr@https://codeload.github.com/brave/netlog2wpr/tar.gz/6f338634a77813d5659a1cf39bd8e021d8aa6c22: {}
 
   node@runtime:24.22.3: {}
 

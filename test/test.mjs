@@ -210,7 +210,7 @@ describe('WPR replay tests', { concurrency: CONCURRENCY, skip: !wprAvailable }, 
   for (const [archiveName, expectedUrl, expectedHash, expectedScrollBlocking, problematicOverlay, unsupportedBrowser] of wprTestCases) {
     it(`wpr: ${archiveName}`, async (t) => {
       const archiveData = (await readFile(path.join(import.meta.dirname, 'data_wpr', `${archiveName}.wprgo`))).toString('base64')
-      const r = await checkPage({ wprGo: { action: 'replay', data: archiveData }, ...args })
+      const r = await checkPage({ wpr: { action: 'replay', data: archiveData }, ...args })
 
       if (r.error) {
         throw new Error(`[${archiveName}] ERROR: ${r.error}`)

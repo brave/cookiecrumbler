@@ -217,7 +217,7 @@ importers:
         version: 6.49.0(ws@8.22.1)(zod@4.6.7)
       proxy-chain:
         specifier: ^3.0.0
-        version: 3.0.1(supports-color@8.1.1)
+        version: 3.0.3(supports-color@8.1.1)
       puppeteer-core:
         specifier: ~25.16.0
         version: 25.16.0
@@ -1808,8 +1808,8 @@ packages:
   property-information@7.2.0:
     resolution: {integrity: sha512-IAtzIB6sUiWaJYrX9smp3V46pBGbBeLFRGdh25kg1334VcBlD8HzhPeNIWQH9zhGmo2itIe25EHt9dQP7G5hmg==}
 
-  proxy-chain@3.0.1:
-    resolution: {integrity: sha512-ZISgL5pwUBXcijycj9ofC8wbJ9GmSEka71kn4dzjphDxfZcecQ6uvU2NWuyQcGdEf0XfscXWDs3KKgjxeQXTZw==}
+  proxy-chain@3.0.3:
+    resolution: {integrity: sha512-okxE6QDZKsagndl1iUY86+1xPqfZUd8JLQn5JRa/1PpzCVwwprFK/Uc3++78UIBvBOdbeXbdBZLqd3IqpE7ypA==}
     engines: {node: '>=20.11'}
 
   punycode@2.3.1:
@@ -3573,7 +3573,7 @@ snapshots:
 
   property-information@7.2.0: {}
 
-  proxy-chain@3.0.1(supports-color@8.1.1):
+  proxy-chain@3.0.3(supports-color@8.1.1):
     dependencies:
       socks: 2.8.10
       socks-proxy-agent: 10.1.0(supports-color@8.1.1)
